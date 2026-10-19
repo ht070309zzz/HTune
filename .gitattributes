@@ -1,10 +1,4 @@
-* text=auto
-*.cpp text eol=lf
-*.h text eol=lf
-*.hpp text eol=lf
-*.hlsl text eol=lf
-*.hlsli text eol=lf
-*.md text eol=lf
-*.ps1 text eol=crlf
+# Preserve source bytes on checkout, including Windows line endings.
+* -text
 *.ico binary
 *.png binary
