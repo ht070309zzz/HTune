@@ -1,0 +1,10 @@
+* text=auto
+*.cpp text eol=lf
+*.h text eol=lf
+*.hpp text eol=lf
+*.hlsl text eol=lf
+*.hlsli text eol=lf
+*.md text eol=lf
+*.ps1 text eol=crlf
+*.ico binary
+*.png binary

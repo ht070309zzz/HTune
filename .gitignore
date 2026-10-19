@@ -1,0 +1,17 @@
+/build/
+/dist/
+/evidence/
+/tools/
+/publication/
+/.vs/
+/.vscode/
+*.user
+*.suo
+*.pdb
+*.obj
+*.exe
+*.dll
+*.zip
+*.log
+.env
+.env.*
