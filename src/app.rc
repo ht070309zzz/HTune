@@ -1,0 +1,31 @@
+#include <windows.h>
+#pragma code_page(65001)
+#include "version.h"
+#include "resource.h"
+1 RT_MANIFEST "app.manifest"
+IDI_MUSIC_STAGE ICON "../assets/htune.ico"
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION MUSIC_STAGE_VERSION_PARTS
+ PRODUCTVERSION MUSIC_STAGE_VERSION_PARTS
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+BEGIN
+ BLOCK "StringFileInfo"
+ BEGIN
+  BLOCK "080404B0"
+  BEGIN
+   VALUE "FileDescription", "HTune 音乐视觉伴侣\0"
+   VALUE "FileVersion", MUSIC_STAGE_VERSION
+   VALUE "ProductName", "HTune\0"
+   VALUE "ProductVersion", MUSIC_STAGE_VERSION
+   VALUE "OriginalFilename", "HTune.exe\0"
+  END
+ END
+ BLOCK "VarFileInfo"
+ BEGIN
+  VALUE "Translation", 0x0804, 1200
+ END
+END
+
