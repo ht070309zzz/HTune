@@ -39,7 +39,7 @@ SMTC 是 Windows 的系统媒体传输控制接口。QQ、酷狗和汽水当前�
 在源码根目录打开 PowerShell：
 
 ```powershell
-.\scriptsuild.ps1 -Configuration Release -Jobs 2
+./scripts/build.ps1 -Configuration Release -Jobs 2
 ```
 
 脚本通过 Visual Studio Installer 的 `vswhere` 定位工具链。着色器离线编译并嵌入程序，第三方头文件及解压源码已随仓库提供，无需 npm 或额外的播放器辅助服务。
