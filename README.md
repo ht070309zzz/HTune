@@ -17,6 +17,16 @@
 - 网易云音乐、QQ 音乐、酷狗音乐与汽水音乐的歌曲信息和各自歌词来源接入。
 - 进程音频采集和本地实时分析；软件本身不提供音乐下载或播放服务。
 
+## 下载
+
+在 [GitHub Releases](https://github.com/ht070309zzz/HTune/releases) 下载 Windows 11 x64 版本：
+
+- `HTune-Setup-<版本>-x64.exe`：安装版，安装到当前用户目录，可创建桌面快捷方式。
+- `HTune-<版本>-windows-x64.zip`：解压即用版，打开其中的 `HTune.exe`。
+- `SHA256SUMS.txt`：上述两个文件的 SHA-256 校验值。
+
+两种版本共用原有用户数据目录。更新或卸载前请从托盘正常退出 HTune；卸载器保留配置、主题和缓存。安装包暂未进行代码签名，安装与卸载流程尚未实机验收。
+
 ## 播放器接入范围
 
 | 播放器 | 接入方式与当前限制 |
@@ -47,6 +57,17 @@ SMTC 是 Windows 的系统媒体传输控制接口。QQ、酷狗和汽水当前�
 构建成功后程序位于 `build/bin/0.7.14/HTune.exe`。Debug 构建使用 `-Configuration Debug`，输出在 `build/bin/debug/0.7.14/HTune.exe`。构建日志及输入摘要保存在 `build/provenance/`，不提交到仓库。
 
 构建脚本只编译，不启动应用、不安装软件，也不执行运行时测试。
+
+## 制作发行包
+
+完成 Release 构建后，使用 [Inno Setup 6.3 或更新版本](https://jrsoftware.org/isinfo.php) 制作安装包和解压即用版：
+
+```powershell
+./scripts/package-release.ps1
+# 非默认位置可传入 -IsccPath 'D:\Tools\Inno Setup 6\ISCC.exe'
+```
+
+输出位于 `dist/releases/<版本>/<本次标识>/assets/`，仅上传该目录下的安装包、ZIP 与校验文件。脚本核对成功构建的源码摘要、x64 程序版本、文件哈希及 ZIP 内容，采用明确的发行文件清单，不收录本机日志、构建收据或用户数据；不会启动安装包或应用。
 
 ## 使用
 

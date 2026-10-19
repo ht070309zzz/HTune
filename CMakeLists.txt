@@ -10,6 +10,9 @@ add_executable(MusicStageNative WIN32 src/main.cpp src/playback.cpp src/playback
 target_include_directories(MusicStageNative PRIVATE include)
 target_compile_features(MusicStageNative PRIVATE cxx_std_20)
 target_compile_definitions(MusicStageNative PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+# Public Release binaries must not embed the builder's local source paths in
+# C++/WinRT exception source_location metadata. Keep Debug diagnostics intact.
+target_compile_definitions(MusicStageNative PRIVATE $<$<CONFIG:Release>:WINRT_NO_SOURCE_LOCATION>)
 target_compile_options(MusicStageNative PRIVATE /W4 /permissive- /EHsc /utf-8)
 set_property(TARGET MusicStageNative PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 target_link_libraries(MusicStageNative PRIVATE d3d11 dxgi dxguid d2d1 dwrite dwmapi imm32 windowsapp runtimeobject uiautomationcore version winhttp bcrypt normaliz ole32 oleaut32 uuid avrt comdlg32 comctl32 shell32 shlwapi mfplat mf mfuuid mfreadwrite windowscodecs mmdevapi uxtheme cldapi)
