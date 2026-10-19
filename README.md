@@ -2,9 +2,9 @@
 
 # HTune
 
-**Windows 11 原生音乐视觉伴侣。** 播放器负责放歌，HTune 把歌词、封面和声音变成桌面上的音乐舞台。
+**Windows 11 原生音乐播放器。** 播放器负责放歌，HTune 把歌词、封面和声音变成桌面上的音乐舞台。
 
-采用 C++20、Win32、Direct3D 11、Direct2D、DirectWrite、Media Foundation、WASAPI 和 WinHTTP。运行时不需要 Electron、WebView 或 Node.js。
+采用 C++20、Win32、Direct3D 11、Direct2D、DirectWrite、Media Foundation、WASAPI 和 WinHTTP。运行时不需要 Electron、WebView 或 Node.js。节省大量CPU性能、内存占用
 
 当前源码版本：**0.7.14**。项目持续开发中，播放器兼容性和同步表现受客户端版本、数据来源及系统环境影响。
 
