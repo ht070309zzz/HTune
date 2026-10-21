@@ -1,3 +1,4 @@
+#include "lyric_credits.h"
 #include "qq_lyrics.h"
 #include "catalog_id.h"
 #include "lyrics.h"
@@ -148,6 +149,12 @@ LyricTimeline ParseQrc(const std::wstring& text) {
         if(row.front()!=L'['||close==std::wstring::npos||comma==std::wstring::npos||comma>close||
             !Decimal(std::wstring_view(row).substr(1,comma-1),start)||!Decimal(std::wstring_view(row).substr(comma+1,close-comma-1),duration,600000)||duration>86400000-start)
             return Failed(L"QRC 行时间标记无效");
+        const auto tail=std::wstring_view(row).substr(close+1);const auto creditOpen=tail.rfind(L'('),creditSeparator=tail.rfind(L',');int64_t creditStart=0,creditDuration=0;
+        const bool hasFinalTiming=creditOpen!=std::wstring_view::npos&&creditSeparator!=std::wstring_view::npos&&creditSeparator>creditOpen&&tail.back()==L')'&&
+            Decimal(tail.substr(creditOpen+1,creditSeparator-creditOpen-1),creditStart)&&Decimal(tail.substr(creditSeparator+1,tail.size()-creditSeparator-2),creditDuration,600000);
+        if(IsLyricCreditText(tail)&&!hasFinalTiming){
+            if(row.size()+1>Limit-converted.size())return Failed(L"QRC 制作信息超过上限");converted+=row+L"\n";continue;
+        }
         std::wstring convertedRow=row.substr(0,close+1);size_t position=close+1;bool timed=false;
         while(position<row.size()){
             auto open=row.find(L'(',position);size_t end=std::wstring::npos;int64_t wordStart=0,wordDuration=0;

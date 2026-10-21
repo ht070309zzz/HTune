@@ -24,11 +24,12 @@ static_assert(sizeof(Constants)==2176);
 void Color(float (&dst)[4],ThemeColor color) {dst[0]=Unit(color.r);dst[1]=Unit(color.g);dst[2]=Unit(color.b);dst[3]=Unit(color.a);}
 }
 
-OriginalComposition ComposeOriginal(int style,float width,float height,float drawer) {
+OriginalComposition ComposeOriginal(int style,float width,float height) {
     OriginalComposition g;
     width=std::max(1.f,width);height=std::max(1.f,height);
-    g.drawerWidth=std::min(width,std::max(340.f,std::min(680.f,width*.46f)))*Unit(drawer);
-    g.drawerLeft=width-g.drawerWidth;g.width=std::max(1.f,g.drawerLeft);g.height=height;
+    // Backstage transforms this complete composition; it never resizes the
+    // artwork or reflows the lyric as the camera moves.
+    g.width=width;g.height=height;
     g.compact=g.width<720.f||height<500.f;g.margin=std::clamp(g.width*.026f,18.f,46.f);
     g.railY=height-std::clamp(height*.052f,20.f,52.f);
     g.controlsX=style==EchoStyle?g.margin:g.width-std::max(64.f,g.width*.055f);
@@ -87,7 +88,7 @@ void OriginalStageState::Update(const PlaybackSnapshot& p,const AudioFeatures& a
     // Unavailable identity holds the sculpture, but cannot append new samples.
     const bool clock=CurrentTimelineSource(p,now)!=TimelineSource::Unavailable;
     const auto audioAt=a.timingTrusted?a.sampledAtMs:a.observedAtMs;
-    if(valid&&currentAudio&&clock&&p.state==PlayState::Playing&&audioAt>lastAudioAt_){
+    if(valid&&currentAudio&&clock&&p.state!=PlayState::Paused&&p.state!=PlayState::Stopped&&audioAt>lastAudioAt_){
         const auto pos=PlaybackPositionAt(p,now);
         if(!samples_.empty()&&(pos<lastPosition_-150||pos-lastPosition_>1800)){
             samples_.clear();displayed_={};historyExtent_=0;
@@ -159,7 +160,7 @@ void OriginalStageGpu::Render(ID3D11DeviceContext* c,ID3D11RenderTargetView* tar
     data.clock[0]=f.seconds;data.clock[1]=Unit(f.trackEnter);data.clock[2]=Unit(f.rowEnter);data.clock[3]=Unit(f.motion);
     data.audio[0]=Unit(f.low*f.response);data.audio[1]=Unit(f.mid*f.response);data.audio[2]=Unit(f.high*f.response);data.audio[3]=Unit(f.pulse*f.response);
     if(f.style==EchoStyle)data.audio[3]=std::isfinite(f.response)?std::clamp(f.response,0.f,2.f):0.f;
-    data.pointer[0]=f.pointerX;data.pointer[1]=f.pointerY;data.pointer[2]=Unit(f.pointerPresence);data.pointer[3]=Unit(f.drawer);
+    data.pointer[0]=f.pointerX;data.pointer[1]=f.pointerY;data.pointer[2]=Unit(f.pointerPresence);data.pointer[3]=float(std::clamp(quality,0,3));
     Color(data.base,f.base);Color(data.accent,f.accent);Color(data.ink,f.ink);
     std::memcpy(data.history,f.history.data(),sizeof(data.history));
     const int strands=quality>=3?440:quality==2?620:880;

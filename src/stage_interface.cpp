@@ -1,6 +1,8 @@
 #include "stage_interface.h"
 #include "window_chrome.h"
 #include "original_stages.h"
+#include "rift_stage.h"
+#include "optional_lyric_font.h"
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -94,13 +96,16 @@ Row ButtonRow(Context& u,std::vector<ButtonSpec> buttons) {
 }
 
 struct StyleInfo {const wchar_t* name;const wchar_t* sample;Color background,glow,accent,ink;Font font;};
-const StyleInfo Styles[BuiltInStyleCount]={
+const auto Styles=[](){std::array<StyleInfo,BuiltInStyleCount> result={{
     {L"轻光流动",L"不想离开",{.067f,.106f,.141f,1},{.271f,.486f,.549f,1},{.565f,.831f,.780f,1},{.94f,.96f,.95f,1},Font::Value},
     {L"电影剧场",L"坠入光里",{.082f,.078f,.067f,1},{.459f,.357f,.208f,1},{.855f,.702f,.455f,1},{.957f,.925f,.875f,1},Font::Title},
     {L"声色排版",L"君と笑う",{.969f,.949f,.910f,1},{.882f,.780f,.659f,1},{.729f,.263f,.169f,1},{.208f,.153f,.098f,1},Font::Title},
     {L"声织",L"织成晚风",{.063f,.067f,.071f,1},{.56f,.27f,.24f,1},{.97f,.53f,.49f,1},{.96f,.94f,.91f,1},Font::Value},
     {L"节拍拼贴",L"跟着心跳",{.027f,.235f,.867f,1},{.027f,.235f,.867f,1},{.867f,1,0,1},{1,1,.97f,1},Font::Value},
-    {L"回声长卷",L"留下回声",{.988f,.992f,.988f,1},{.79f,.86f,.82f,1},{.16f,.4f,.30f,1},{.08f,.24f,.19f,1},Font::Title}};
+    {L"回声长卷",L"留下回声",{.988f,.992f,.988f,1},{.79f,.86f,.82f,1},{.16f,.4f,.30f,1},{.08f,.24f,.19f,1},Font::Title},
+    {L"裂光现场",L"让黑夜裂开",{.031f,.035f,.047f,1},{.24f,.08f,.035f,1},{1,.353f,.122f,1},{.957f,.949f,.933f,1},Font::Value}}};
+    const auto rgb=[](unsigned c){return Color{((c>>16)&255)/255.f,((c>>8)&255)/255.f,(c&255)/255.f,1};};
+    for(size_t i=0;i<FoliaStyles.size();++i){const auto& v=FoliaStyles[i];result[FirstFoliaStyle+i]={v.name,v.sample,rgb(v.background),rgb(v.accent),rgb(v.accent),rgb(v.ink),Font::Value};}for(size_t i=0;i<MineradioNames.size();++i)if(MineradioNames[i])result[FirstMineradioStyle+i]={MineradioNames[i],L"音乐流经整个空间",rgb(0x070910),rgb(0x89cde8),rgb(0xa993e4),rgb(0xf0f5fc),Font::Value};return result;}();
 
 // One selectable style card: the style's own light and type on its ground.
 bool StyleCard(Context& u,uint32_t id,Rect r,const StyleInfo& style,bool selected,std::wstring_view tag,float seconds,int variant=0) {
@@ -111,7 +116,12 @@ bool StyleCard(Context& u,uint32_t id,Rect r,const StyleInfo& style,bool selecte
     u.Draw().Fill(r,radius,style.background);
     u.Draw().PushClip(r);
     const float drift=std::sin(seconds*.35f+r.left*.01f);
-    if(variant==WeaveStyle){
+    if(variant==RiftStyle){
+        const float slit=r.left+r.Width()*(.38f+.04f*drift);
+        u.Draw().Line({slit,r.top},{slit+r.Width()*.18f,r.bottom},WithAlpha(style.accent,.9f),2.f);
+        for(int i=0;i<4;++i)u.Draw().Line({slit-16.f-i*8.f,r.top+r.Height()*.23f+i*5.f},
+            {r.right,r.top+r.Height()*.43f+i*5.f},WithAlpha(style.accent,.09f*(4-i)),1.f);
+    }else if(variant==WeaveStyle){
         for(int i=0;i<36;++i){
             const float x=(i+.5f)/36.f;Point previous{};
             for(int j=0;j<=20;++j){
@@ -174,12 +184,6 @@ ui::Theme StageInterface::ConsoleTheme(const InterfaceFrame& f) {
     return t;
 }
 ui::Theme StageInterface::BackstageTheme(const InterfaceFrame& f) {
-    if(IsOriginalStyle(f.style)){
-        auto t=ConsoleTheme(f);
-        if(f.style==EchoStyle){t.glassTint={.92f,.95f,.93f,1};t.glassRim={.15f,.3f,.23f,.12f};}
-        else {t.glassTint={.09f,.10f,.11f,1};t.glassRim={1,1,1,.1f};}
-        return t;
-    }
     Theme t;
     t.ink={.96f,.95f,.93f,1};t.muted={.70f,.69f,.67f,1};t.faint={.50f,.49f,.48f,1};
     t.accent=Luminous(f.lightStage?Mix(f.accent,{1,1,1,1},.15f):f.accent,.45f);
@@ -240,6 +244,9 @@ void StageInterface::WindowChrome(Context& u,const InterfaceFrame& frame,std::ve
 void StageInterface::OriginalControls(Context& u,const SettingsView& view,InterfaceState& state,const InterfaceFrame& frame,std::vector<UiAction>& actions) {
     const float visibility=1.f-Smooth(backstagePresence_);
     if(visibility<.01f)return;
+    // These are full-stage controls, not controls inside the projected card.
+    // Keep their fade, but give Backstage sole input ownership until closed.
+    const uint32_t flags=state.backstage||backstagePresence_>.01f?FlagDisabled:FlagNone;
     const auto g=ComposeOriginal(frame.style,frame.width,frame.height);
     auto t=ConsoleTheme(frame);u.SetTheme(t);u.PushOpacity(visibility);
     const float x=g.controlsX,w=frame.style==EchoStyle?78.f:std::max(28.f,g.width-g.controlsX-8.f);
@@ -247,7 +254,7 @@ void StageInterface::OriginalControls(Context& u,const SettingsView& view,Interf
     const wchar_t* names[3]={L"舞台",L"字幕",L"外观"};const int pages[3]={0,2,1};
     for(int i=0;i<3;++i){
         const auto r=Rect::Xywh(x,y+i*44.f,w,32.f);const uint32_t id=Context::Id("original.edge",i);
-        const auto st=u.Interact(id,r);
+        const auto st=u.Interact(id,r,flags);
         const float hover=u.Animate(id,5,st.hovered||st.focused?1.f:0.f,12.f);
         u.Label(r,names[i],g.compact||w<48.f?Font::Body:Font::StageNav,Mix(t.muted,t.ink,hover),Align::Leading);
         if(hover>.01f)u.Draw().Fill(Rect::Xywh(x-10.f,r.top+8.f,2.f,16.f),0,WithAlpha(t.accent,hover));
@@ -258,19 +265,19 @@ void StageInterface::OriginalControls(Context& u,const SettingsView& view,Interf
     // deliberately input-transparent and never receives these controls.
     const float iconsY=std::min(frame.height-130.f,y+154.f);
     if(frame.console&&frame.height>420.f){
-        if(u.IconButton(Context::Id("original.fullscreen"),Rect::Xywh(x-6.f,iconsY,34.f,34.f),view.fullscreen?IconWindowed:IconFullscreen,L"切换全屏"))Push(actions,UiCommand::ToggleFullscreen);
-        if(u.IconButton(Context::Id("original.desktop"),Rect::Xywh(x-6.f,iconsY+40.f,34.f,34.f),IconDesktop,L"融入桌面"))Push(actions,UiCommand::EnterDesktop);
+        if(u.IconButton(Context::Id("original.fullscreen"),Rect::Xywh(x-6.f,iconsY,34.f,34.f),view.fullscreen?IconWindowed:IconFullscreen,L"切换全屏",false,flags))Push(actions,UiCommand::ToggleFullscreen);
+        if(u.IconButton(Context::Id("original.desktop"),Rect::Xywh(x-6.f,iconsY+40.f,34.f,34.f),IconDesktop,L"融入桌面",false,flags))Push(actions,UiCommand::EnterDesktop);
     }
     if(frame.style==EchoStyle){
         const float sliderWidth=std::min(200.f,frame.width*.19f),left=frame.width-g.margin-sliderWidth;
         float value=view.response;
         u.Label(Rect::Xywh(left-56.f,frame.height-65.f,48.f,30.f),L"起伏",Font::Small,t.muted);
-        if(u.Slider(Context::Id("original.response"),Rect::Xywh(left,frame.height-65.f,sliderWidth,30.f),value,0.f,2.f,.01f))Push(actions,UiCommand::SetResponse,0,value);
+        if(u.Slider(Context::Id("original.response"),Rect::Xywh(left,frame.height-65.f,sliderWidth,30.f),value,0.f,2.f,.01f,flags))Push(actions,UiCommand::SetResponse,0,value);
     }else{
         const float cx=frame.style==WeaveStyle?frame.width*.88f:x+12.f;
         const float cy=frame.style==WeaveStyle?frame.height*.5f:frame.height*.63f;
         const Rect r=Rect::Xywh(cx-18.f,cy-60.f,36.f,120.f);const uint32_t id=Context::Id("original.vertical-response");
-        const auto st=u.Interact(id,r);
+        const auto st=u.Interact(id,r,flags);
         const bool pointerNearby=frame.pointerActive&&std::abs(frame.pointerX-cx)<120.f&&std::abs(frame.pointerY-cy)<160.f;
         const float show=u.Animate(id,5,frame.style==PosterStyle||pointerNearby||st.held||st.focused?1.f:0.f,10.f);
         u.PushOpacity(show);
@@ -284,8 +291,8 @@ void StageInterface::OriginalControls(Context& u,const SettingsView& view,Interf
         u.PopOpacity();
     }
     // Keep actionable lyric recovery available without covering the artwork.
-    if(view.resumeLyrics&&u.Button(Context::Id("original.resume"),Rect::Xywh(g.margin,g.railY-50.f,170.f,30.f),L"返回当前句 · Home",ButtonKind::Quiet,view.resumeEnabled?FlagNone:FlagDisabled))Push(actions,UiCommand::ResumeLyrics);
-    if(view.matchLyrics&&u.Button(Context::Id("original.match"),Rect::Xywh(g.margin+(view.resumeLyrics?180.f:0.f),g.railY-50.f,150.f,30.f),L"核对歌词版本",ButtonKind::Quiet))Push(actions,UiCommand::MatchLyrics);
+    if(view.resumeLyrics&&u.Button(Context::Id("original.resume"),Rect::Xywh(g.margin,g.railY-50.f,170.f,30.f),L"返回当前句 · Home",ButtonKind::Quiet,flags|(view.resumeEnabled?FlagNone:FlagDisabled)))Push(actions,UiCommand::ResumeLyrics);
+    if(view.matchLyrics&&u.Button(Context::Id("original.match"),Rect::Xywh(g.margin+(view.resumeLyrics?180.f:0.f),g.railY-50.f,150.f,30.f),L"核对歌词版本",ButtonKind::Quiet,flags))Push(actions,UiCommand::MatchLyrics);
     u.PopOpacity();
 }
 
@@ -362,6 +369,12 @@ void StageInterface::Console(Context& u,const SettingsView& view,InterfaceState&
     float x=cover.right+12.f+titleWidth+14.f;
     // Style switch.
     if(medium){
+        if(IsGlyphMotionStyle(view.themeStyle)){
+            const Rect button=Rect::Xywh(x,bar.top+20.f,roomy?186.f:168.f,36.f);
+            const wchar_t* label=MotionName(view.themeStyle);
+            if(u.Button(Context::Id("console.rift-style"),button,view.customTheme?L"自定义主题":label,ButtonKind::Secondary))Push(actions,UiCommand::OpenBackstage,1);
+            x=button.right+12.f;
+        }else{
         int style=view.customTheme?-1:std::clamp(view.themeStyle,0,2);
         int shown=style<0?std::clamp(view.themeStyle,0,2):style;
         const Rect seg=Rect::Xywh(x,bar.top+20.f,roomy?186.f:168.f,36.f);
@@ -369,6 +382,7 @@ void StageInterface::Console(Context& u,const SettingsView& view,InterfaceState&
         if(u.Segmented(Context::Id("console.style"),seg,{L"流光",L"剧场",L"排版"},shown))Push(actions,UiCommand::SelectStyle,shown);
         u.PopOpacity();
         x=seg.right+12.f;
+        }
     }
     if(roomy){
         int mode=std::clamp(view.lyricDisplayMode,0,2);
@@ -417,27 +431,22 @@ void StageInterface::Backstage(Context& u,const SettingsView& view,InterfaceStat
     if(presence<.01f)return;
     const auto t=BackstageTheme(frame);u.SetTheme(t);
     const float W=frame.width,H=frame.height;
-    const bool original=IsOriginalStyle(frame.style);
-    const auto originalGeometry=ComposeOriginal(frame.style,W,H,presence);
-    if(original){
-        const auto panel=frame.style==EchoStyle?Color{.98f,.99f,.98f,1}:Color{.045f,.05f,.055f,1};
-        u.Draw().Fill(Rect{originalGeometry.drawerLeft,0,W,H},0,panel);
-        u.Draw().Line({originalGeometry.drawerLeft,0},{originalGeometry.drawerLeft,H},WithAlpha(t.accent,.3f),1.f);
-    }
     // The whole canvas belongs to Backstage while it is open.
     u.Block(Rect{0,0,W,H});
     // The stage card (left half): clicking it returns to the stage.
     {
         const uint32_t id=Context::Id("backstage.card");
-        auto st=u.Interact(id,Rect{0,0,original?originalGeometry.drawerLeft:W*.5f,H},FlagNoFocus);
+        auto st=u.Interact(id,Rect{0,0,W*.5f,H},FlagNoFocus);
         if(st.clicked&&state.backstage)Push(actions,UiCommand::CloseBackstage);
         u.PushOpacity(presence*(.55f+.45f*st.hover));
-        if(!original)u.Label(Rect{0,H*.86f,W*.5f,H*.86f+24.f},L"点击舞台返回 · Esc",Font::Small,t.muted,Align::Center);
+        u.Label(Rect{0,H*.86f,W*.5f,H*.86f+24.f},L"点击舞台返回 · Esc",Font::Small,t.muted,Align::Center);
         u.PopOpacity();
     }
-    const float x0=original?originalGeometry.drawerLeft+22.f:W*.5f+16.f,x1=W-(original?22.f:40.f);
+    // The minimum 680-DIP window still leaves at least 300 DIPs for a page.
+    const float x0=W*.5f+16.f,x1=W-(W<760.f?16.f:40.f);
     if(x1-x0<300.f)return;
-    const float slide=frame.reducedMotion||original?0.f:(1.f-presence)*36.f;
+    const bool narrow=x1-x0<470.f;
+    const float slide=frame.reducedMotion?0.f:(1.f-presence)*36.f;
     u.PushOpacity(Smooth(presence));
     // Page tabs and the way back.
     static const wchar_t* names[4]={L"画面",L"主题",L"歌词",L"状态"};
@@ -464,14 +473,14 @@ void StageInterface::Backstage(Context& u,const SettingsView& view,InterfaceStat
     {
         const std::wstring back=L"返回舞台";
         const float w=u.TextWidth(back,Font::Strong)+52.f;
-        const Rect r=Rect::Xywh(x1-w,(original&&x1-x0<470.f?67.f:28.f)+headerInset,w,34.f);
+        const Rect r=Rect::Xywh(x1-w,(narrow?67.f:28.f)+headerInset,w,34.f);
         if(u.Button(Context::Id("backstage.back"),r,back,ButtonKind::Quiet))Push(actions,UiCommand::CloseBackstage);
     }
     // Page heading; a page change (here or from the app) fades the new page in.
     const int page=std::clamp(state.page,0,3);
     if(page!=shownPage_){shownPage_=page;pageChangedAt_=frame.nowMs;}
     const float enter=Smooth(static_cast<float>(std::max<int64_t>(0,frame.nowMs-pageChangedAt_))/240.f);
-    const float headY=(original&&x1-x0<470.f?112.f:86.f)+headerInset+(1.f-enter)*8.f;
+    const float headY=(narrow?112.f:86.f)+headerInset+(1.f-enter)*8.f;
     u.PushOpacity(enter);
     u.Label(Rect::Xywh(x0+slide,headY,x1-x0,14.f),overline[page],Font::Overline,t.accent);
     u.Label(Rect::Xywh(x0+slide,headY+16.f,x1-x0,44.f),names[page],Font::Title,t.ink);
@@ -533,6 +542,14 @@ float StageInterface::PicturePage(Context& u,const SettingsView& view,Rect colum
         SwitchRow(u,"picture.motion",L"减少动态",L"减少镜头与粒子运动，Backstage 改为淡入淡出",view.reducedMotion,inner,
             [&](bool v){Push(actions,UiCommand::SetReducedMotion,v?1:0);}),
         ButtonRow(u,{{"picture.reset",L"恢复背景调节默认值",ButtonKind::Quiet,true,[&]{Push(actions,UiCommand::ResetBackdrop);}}})});
+    y=Section(u,x,y,w,L"歌词字体",{
+        SegmentedRow(u,"picture.font",L"选择字体",{L"主题原字体",L"文楷",L"黄油体",L"快乐体",L"自选"},
+            view.lyricFontPath.empty()?(view.lyricFont==L"@wenkai"?1:view.lyricFont==L"@huangyou"?2:view.lyricFont==L"@kuaile"?3:view.lyricFont.empty()?0:4):4,
+            [&](int index){if(index<4)Push(actions,UiCommand::SetLyricFont,index);else Push(actions,UiCommand::ChooseSystemLyricFont);}),
+        NoteRow(u,L"当前："+LyricFontLabel(view.lyricFont,view.lyricFontPath),inner),
+        ButtonRow(u,{{"picture.systemfont",L"本机字体…",ButtonKind::Secondary,true,[&]{Push(actions,UiCommand::ChooseSystemLyricFont);}},
+            {"picture.importfont",L"导入 TTF / OTF…",ButtonKind::Secondary,true,[&]{Push(actions,UiCommand::ImportLyricFont);}}}),
+        NoteRow(u,view.lyricFontNotice.empty()?L"字体选择随自定义主题保存。导入字体使用本地文件引用，分享主题时请同时保留字体文件。":view.lyricFontNotice,inner)});
     y=Section(u,x,y,w,L"性能",{
         SegmentedRow(u,"picture.quality",L"画质（自动会按显卡负载调整）",{L"自动",L"高",L"中",L"低"},std::clamp(view.qualityMode,0,3),
             [&](int v){Push(actions,UiCommand::SetQuality,v);}),
@@ -545,15 +562,28 @@ float StageInterface::PicturePage(Context& u,const SettingsView& view,Rect colum
 
 float StageInterface::ThemePage(Context& u,const SettingsView& view,Rect column,std::vector<UiAction>& actions) {
     const float x=column.left,w=column.Width(),inner=w-40.f;float y=column.top;
+    if(view.themeStyle==8||view.themeStyle==9||view.themeStyle==7||view.themeStyle==19){
+        const int count=view.themeStyle==8?121:view.themeStyle==9?100:view.themeStyle==7?100:13;
+        y=Section(u,x,y,w,L"场景编排",{SliderRow(u,"motion.variant",L"子预设",view.motionVariant<0?L"随歌词变化":std::to_wstring(view.motionVariant+1)+L" / "+std::to_wstring(count),
+            static_cast<float>(view.motionVariant),-1.f,static_cast<float>(count-1),1.f,[&](float v){Push(actions,UiCommand::SetMotionVariant,static_cast<int>(std::lround(v)));})});
+    }
+    if(IsMineradioStyle(view.themeStyle)){
+        y=Section(u,x,y,w,L"歌词与镜头",{
+            SegmentedRow(u,"motion.fx",L"文字动效",{L"玻璃",L"柔顺",L"漂浮",L"快切",L"流光",L"故障"},view.motionFx,[&](int v){Push(actions,UiCommand::SetMotionFx,v);}),
+            SegmentedRow(u,"motion.camera",L"镜头",{L"环绕",L"指针运镜",L"焦点跟随"},view.motionCamera,[&](int v){Push(actions,UiCommand::SetMotionCamera,v);}),
+            SliderRow(u,"motion.lines",L"可见歌词行数",std::to_wstring(view.motionLines),static_cast<float>(view.motionLines),1,10,1,[&](float v){Push(actions,UiCommand::SetMotionLines,static_cast<int>(std::lround(v)));})});
+    }
+    if(IsFoliaStyle(view.themeStyle))y=Section(u,x,y,w,L"场景背景",{SegmentedRow(u,"motion.background",L"背景效果",{L"通用",L"莫奈",L"漫游",L"隐现",L"空"},view.motionBackground,[&](int v){Push(actions,UiCommand::SetMotionBackground,v);})});
+    if(IsFoliaStyle(view.themeStyle)&&view.motionBackground==2)y=Section(u,x,y,w,L"漫游滤镜",{SegmentedRow(u,"motion.filter",L"图像处理",{L"抖色",L"玻璃",L"纸纹",L"网点",L"透镜"},view.motionFilter,[&](int v){Push(actions,UiCommand::SetMotionFilter,v);})});
     const float seconds=static_cast<float>(u.Frame().nowMs%600000)/1000.f;
     const bool custom=view.customTheme||view.themeRestorePending;
     const int selected=view.customTheme?-1:std::clamp(view.themeStyle,0,BuiltInStyleCount-1);
     const int columns=inner<470.f?2:3;
     const float cardWidth=(inner-12.f*(columns-1))/columns,cardHeight=std::clamp(cardWidth*.78f,120.f,170.f);
     std::vector<Row> rows;
-    for(int row=0;row<(BuiltInStyleCount+columns-1)/columns;++row)rows.push_back({cardHeight,[&,cardWidth,selected,seconds,row,columns](Rect r){
+    for(int row=0;row<(static_cast<int>(AvailableBuiltInStyles.size())+columns-1)/columns;++row)rows.push_back({cardHeight,[&,cardWidth,selected,seconds,row,columns](Rect r){
         for(int col=0;col<columns;++col){
-            const int i=row*columns+col;if(i>=BuiltInStyleCount)break;
+            const int choice=row*columns+col;if(choice>=static_cast<int>(AvailableBuiltInStyles.size()))break;const int i=AvailableBuiltInStyles[choice];
             const Rect card=Rect::Xywh(r.left+static_cast<float>(col)*(cardWidth+12.f),r.top,cardWidth,r.Height());
             if(StyleCard(u,Context::Id("theme.card",static_cast<uint32_t>(i)),card,Styles[i],i==selected,L"使用中",seconds,i))
                 Push(actions,UiCommand::SelectStyle,i);
