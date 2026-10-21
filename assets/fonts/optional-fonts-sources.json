@@ -1,0 +1,32 @@
+[
+  {
+    "bytes": 13801408,
+    "sha256": "9282063131640C9558A102560CF6D6F8ECC4BB441E74F2BCFF032CE4786238D0",
+    "licenseName": "LXGWWenKaiLite-OFL.txt",
+    "commit": "251ab63642d1c1c5db80497d78911b7aae6917d7",
+    "path": "fonts/TTF/LXGWWenKaiLite-Medium.ttf",
+    "repo": "lxgw/LxgwWenKai-Lite",
+    "name": "LXGWWenKaiLite-Medium.ttf",
+    "license": "OFL.txt"
+  },
+  {
+    "bytes": 1514968,
+    "sha256": "812A6FC1FE54B6D73A419245C32DFEBA8AA33104D5BE90D1CF6AF082007CB71D",
+    "licenseName": "ZCOOLKuaiLe-OFL.txt",
+    "commit": "47d54ca1ebb14fd864695f1d39dc734f39017c33",
+    "path": "ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf",
+    "repo": "google/fonts",
+    "name": "ZCOOLKuaiLe-Regular.ttf",
+    "license": "ofl/zcoolkuaile/OFL.txt"
+  },
+  {
+    "bytes": 8328684,
+    "sha256": "54F0C0DF4308CD74CD0F2FD3494AE054DBC4A1FD6FA7D71F4807EB4CDD8B4136",
+    "licenseName": "ZCOOLQingKeHuangYou-OFL.txt",
+    "commit": "47d54ca1ebb14fd864695f1d39dc734f39017c33",
+    "path": "ofl/zcoolqingkehuangyou/ZCOOLQingKeHuangYou-Regular.ttf",
+    "repo": "google/fonts",
+    "name": "ZCOOLQingKeHuangYou-Regular.ttf",
+    "license": "ofl/zcoolqingkehuangyou/OFL.txt"
+  }
+]
