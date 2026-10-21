@@ -35,6 +35,9 @@ function Get-NativeSourceSnapshot {
     $prefix=$root+[IO.Path]::DirectorySeparatorChar
     $paths=[Collections.Generic.List[string]]::new()
     $paths.Add('CMakeLists.txt')
+    foreach($notice in @('LICENSE','THIRD-PARTY-NOTICES.md')){
+        if(Test-Path -LiteralPath (Join-Path $root $notice) -PathType Leaf){$paths.Add($notice)}
+    }
     foreach($directory in @('src','include','assets','scripts')) {
         $folder=Join-Path $root $directory
         if(!(Test-Path -LiteralPath $folder -PathType Container)){throw "Missing native source directory: $directory"}
