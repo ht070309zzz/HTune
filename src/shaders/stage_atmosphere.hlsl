@@ -1,5 +1,6 @@
 // MusicStage GPU stage: full-screen atmosphere (low resolution) and composite.
 #include "stage_common.hlsli"
+#include "stage_detail.hlsli"
 
 struct FullscreenOut
 {
@@ -122,6 +123,9 @@ float4 AtmospherePS(FullscreenOut input) : SV_Target
     if (gStage.x < 0.5) color = FlowAtmosphere(uv, t);
     else if (gStage.x < 1.5) color = CinemaAtmosphere(uv, t);
     else color = PaperAtmosphere(uv, t);
+    float moving=gDust.w>=4?0:1;
+    float4 detail=ThemeDetail(uv,gResolution.x/gResolution.y,t*moving,gAudio.x*gParams.x*moving,gAudio.z*gParams.x*moving,gAudio.w*gParams.x*moving,gAccent.rgb,gBase.rgb,(int)gStage.x,fmod(gDust.w,4));
+    color=color*(1-detail.a)+detail.rgb;
     return float4(max(color, 0.0), 1.0);
 }
 

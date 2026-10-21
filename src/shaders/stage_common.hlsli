@@ -13,7 +13,7 @@ cbuffer StageConstants : register(b0)
     float4 gField;      // x,y = particle field center (px), z = field size (px), w = opacity
     float4 gStage;      // x = style, y = light background (0/1), z = finish strength, w = particle gain
     float4 gGrid;       // x = grid size N, y = 1/N, z = sprite half size (px), w = DPI scale
-    float4 gDust;       // x = opacity, y = sprite half size (px), z = count, w = unused
+    float4 gDust;       // x = opacity, y = half size, z = count, w = quality + 4 when reduced
     float4 gCamera;     // x = distance, y = NDC scale x, z = NDC scale y, w = reference distance
     float4 gShift;      // x,y = NDC field center, z = atmosphere texel x, w = atmosphere texel y
     float4 gRotation0;  // rows of the particle field rotation
