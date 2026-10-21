@@ -321,7 +321,7 @@ void StageGpu::Render(ID3D11DeviceContext* context,ID3D11RenderTargetView* targe
     Set(c.stageInfo,static_cast<float>(std::clamp(f.style,0,2)),f.lightBackground?1.f:0.f,std::clamp(Finite(f.finish,1.f),0.f,1.5f),gain);
     const float dpi=std::clamp(Finite(f.dpiScale,1.f),.5f,8.f);
     Set(c.grid,float(grid),1.f/float(grid),fieldSize/float(grid)*.62f,dpi);
-    Set(c.dust,Unit(f.dustOpacity),1.1f*dpi,float(dustCount),0.f);
+    Set(c.dust,Unit(f.dustOpacity),1.1f*dpi,float(dustCount),float(tier)+(f.reducedMotion?4.f:0.f));
     // A slow cinematic drift with a short push-in on detected low-band onsets.
     const float yaw=camera*(.20f*std::sin(.13f*seconds)+.08f*std::sin(.051f*seconds+1.1f));
     const float pitch=camera*(.10f*std::sin(.097f*seconds+.6f)-.06f);

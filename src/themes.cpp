@@ -191,7 +191,17 @@ bool ThemeColorValue(const ThemeJson& value, const wchar_t* field, ThemeColor& r
     return true;
 }
 bool ThemeValidDefinition(ThemeDefinition& definition, std::wstring& warnings, std::wstring& error) {
-    if (definition.baseStyle < 0 || definition.baseStyle >= BuiltInStyleCount) { error = L"baseStyle 必须是 0 到 5"; return false; }
+    if(definition.lyricFont.size()>256||definition.lyricFont.find(L'\0')!=std::wstring::npos||
+        definition.lyricFontPath.native().size()>32760||definition.lyricFontPath.native().find(L'\0')!=std::wstring::npos){error=L"歌词字体名称或文件路径无效";return false;}
+    if (definition.baseStyle < 0 || definition.baseStyle >= BuiltInStyleCount) { error = L"baseStyle 必须是 0 到 "+std::to_wstring(BuiltInStyleCount-1); return false; }
+    definition.baseStyle=NormalizeBuiltInStyle(definition.baseStyle);
+    if(definition.motionFx<0||definition.motionFx>5){error=L"motionFx 无效";return false;}
+    if(definition.motionCamera<0||definition.motionCamera>2){error=L"motionCamera 无效";return false;}
+    if(definition.motionLines<1||definition.motionLines>10){error=L"motionLines 无效";return false;}
+    if(definition.motionFilter<0||definition.motionFilter>4){error=L"motionFilter 无效";return false;}
+    if(definition.motionBackground<0||definition.motionBackground>4){error=L"motionBackground 无效";return false;}
+    if(MotionVariantCount(definition.baseStyle)>0&&definition.motionVariant>=MotionVariantCount(definition.baseStyle)){error=L"motionVariant 超出该主题的子预设范围";return false;}
+    if(definition.motionVariant < -1 || definition.motionVariant>255){error=L"motionVariant 必须为 -1 到 255";return false;}
     if(definition.lyricDisplayMode<0||definition.lyricDisplayMode>2){error=L"lyricDisplayMode 必须是 0、1 或 2";return false;}
     if (definition.name.empty() || definition.name.size() > ThemeMaxName || ThemeToUtf8(definition.name).empty()) {
         error = L"name 必须是有效且不超过 128 字符的名称"; return false;
@@ -232,10 +242,11 @@ ThemeJson ThemeSerialize(const ThemeDefinition& definition) {
     auto color = [](const ThemeColor& c) { return ThemeJson::array({c.r, c.g, c.b, c.a}); };
     const char* kind = definition.backgroundKind == ThemeBackgroundKind::Image ? "image" :
         definition.backgroundKind == ThemeBackgroundKind::Video ? "video" : "none";
-    return ThemeJson{{"schema", 1}, {"name", ThemeToUtf8(definition.name)}, {"baseStyle", definition.baseStyle},
+    return ThemeJson{{"schema", 1}, {"name", ThemeToUtf8(definition.name)}, {"baseStyle", definition.baseStyle},{"motionVariant",definition.motionVariant},{"motionFx",definition.motionFx},{"motionCamera",definition.motionCamera},{"motionLines",definition.motionLines},{"motionBackground",definition.motionBackground},{"motionFilter",definition.motionFilter},
         {"colors", {{"background", color(definition.background)}, {"panel", color(definition.panel)},
             {"ink", color(definition.ink)}, {"muted", color(definition.muted)},
             {"accent", color(definition.accent)}, {"glow", color(definition.glow)}}},
+        {"lyricFont",ThemeToUtf8(definition.lyricFont)},{"lyricFontPath",ThemeToUtf8(definition.lyricFontPath.wstring())},
         {"response", definition.response}, {"lyricSize", definition.lyricSize}, {"reducedMotion", definition.reducedMotion},
         {"lyricDisplayMode",definition.lyricDisplayMode},
         {"backgroundShade",definition.backgroundShade},{"cameraMotion",definition.cameraMotion},
@@ -244,7 +255,11 @@ ThemeJson ThemeSerialize(const ThemeDefinition& definition) {
 } // namespace
 
 ThemeDefinition BuiltInTheme(int style) {
+    style=NormalizeBuiltInStyle(style);
     ThemeDefinition result;
+    if(IsMineradioStyle(style)){result.name=MineradioNames[style-FirstMineradioStyle];result.baseStyle=style;result.background=ThemeRgb(0x070910);result.panel=ThemeRgb(0x171D27);result.ink=ThemeRgb(0xF0F5FC);result.muted=ThemeRgb(0x95A8BE);result.accent=ThemeRgb(0x89CDE8);result.glow=ThemeRgb(0xA993E4);return result;}
+    if(IsFoliaStyle(style)){const auto& v=FoliaStyles[style-FirstFoliaStyle];result.name=v.name;result.baseStyle=style;
+        result.background=ThemeRgb(v.background);result.panel=ThemeRgb(v.panel);result.ink=ThemeRgb(v.ink);result.muted=ThemeRgb(v.muted);result.accent=result.glow=ThemeRgb(v.accent);return result;}
     if (style == 0) {
         result.name = L"轻光流动"; result.baseStyle = 0;
         result.background = ThemeRgb(0x111B24); result.panel = ThemeRgb(0x17232E); result.ink = ThemeRgb(0xF0F4F3);
@@ -265,6 +280,10 @@ ThemeDefinition BuiltInTheme(int style) {
         result.name=L"回声长卷";result.baseStyle=5;
         result.background=ThemeRgb(0xFCFDFC);result.panel=ThemeRgb(0xEFF3F0);result.ink=ThemeRgb(0x153E30);
         result.muted=ThemeRgb(0x8DA699);result.accent=ThemeRgb(0x28664D);result.glow=ThemeRgb(0xCBDCD1);
+    } else if (style == 6) {
+        result.name=L"裂光现场";result.baseStyle=6;
+        result.background=ThemeRgb(0x08090C);result.panel=ThemeRgb(0x111217);result.ink=ThemeRgb(0xF4F2EE);
+        result.muted=ThemeRgb(0x929298);result.accent=ThemeRgb(0xFF5A1F);result.glow=ThemeRgb(0xFF5A1F);
     }
     return result;
 }
@@ -285,7 +304,7 @@ ThemeResult ParseThemeJson(std::string_view utf8) {
         int style = 2;
         if (const auto* field = ThemeField(document, "baseStyle")) {
             if (!field->is_number_integer() || field->get<int64_t>() < 0 || field->get<int64_t>() >= BuiltInStyleCount) {
-                result.diagnostic = L"baseStyle 必须是 0 到 5"; return result;
+                result.diagnostic = L"baseStyle 必须是 0 到 "+std::to_wstring(BuiltInStyleCount-1); return result;
             }
             style = field->get<int>();
         }
@@ -303,6 +322,12 @@ ThemeResult ParseThemeJson(std::string_view utf8) {
                 if (!ThemeColorValue(*field, std::wstring(name, name + strlen(name)).c_str(), *destination, warnings, error)) {
                     result.diagnostic = error; return result;
                 }
+        }
+        for(const auto name:{"lyricFont","lyricFontPath"})if(const auto* field=ThemeField(document,name)){
+            if(!field->is_string()||field->get_ref<const std::string&>().size()>(std::string(name)=="lyricFont"?768u:98304u)){result.diagnostic=L"歌词字体字段无效";return result;}
+            const auto value=ThemeFromUtf8(field->get<std::string>());
+            if(value.find(L'\0')!=std::wstring::npos){result.diagnostic=L"歌词字体字段含无效字符";return result;}
+            if(std::string(name)=="lyricFont")result.definition.lyricFont=value;else result.definition.lyricFontPath=value;
         }
         if (const auto* field = ThemeField(document, "response"))
             if (!ThemeNumeric(*field, 0, 2, L"response", result.definition.response, warnings, error)) { result.diagnostic = error; return result; }
@@ -335,8 +360,16 @@ ThemeResult ParseThemeJson(std::string_view utf8) {
                 result.definition.backgroundPath = ThemeFromUtf8(field->get<std::string>());
             }
         }
-        if (!ThemeValidDefinition(result.definition, warnings, error)) { result.diagnostic = error; return result; }
-        const std::set<std::string> known{"schema", "name", "baseStyle", "colors", "response", "lyricSize", "reducedMotion", "lyricDisplayMode", "backgroundShade", "cameraMotion", "background"};
+        if(const auto* field=ThemeField(document,"motionVariant")){
+            if(!field->is_number_integer()||field->get<int64_t>() < -1||field->get<int64_t>()>255){result.diagnostic=L"motionVariant 必须为 -1 到 255";return result;}
+            result.definition.motionVariant=field->get<int>();}
+        if(const auto* field=ThemeField(document,"motionFx")){if(!field->is_number_integer()||field->get<int64_t>()<0||field->get<int64_t>()>5){result.diagnostic=L"motionFx 无效";return result;}result.definition.motionFx=field->get<int>();}
+        if(const auto* field=ThemeField(document,"motionCamera")){if(!field->is_number_integer()||field->get<int64_t>()<0||field->get<int64_t>()>2){result.diagnostic=L"motionCamera 无效";return result;}result.definition.motionCamera=field->get<int>();}
+        if(const auto* field=ThemeField(document,"motionLines")){if(!field->is_number_integer()||field->get<int64_t>()<1||field->get<int64_t>()>10){result.diagnostic=L"motionLines 无效";return result;}result.definition.motionLines=field->get<int>();}
+        if(const auto* field=ThemeField(document,"motionBackground")){if(!field->is_number_integer()||field->get<int64_t>()<0||field->get<int64_t>()>4){result.diagnostic=L"motionBackground 无效";return result;}result.definition.motionBackground=field->get<int>();}
+        if(const auto* field=ThemeField(document,"motionFilter")){if(!field->is_number_integer()||field->get<int64_t>()<0||field->get<int64_t>()>4){result.diagnostic=L"motionFilter 无效";return result;}result.definition.motionFilter=field->get<int>();}
+        if(!ThemeValidDefinition(result.definition,warnings,error)){result.diagnostic=error;return result;}
+        const std::set<std::string> known{"schema", "name", "baseStyle", "motionVariant", "motionFx", "motionCamera", "motionLines", "motionBackground", "motionFilter", "colors", "response", "lyricSize", "lyricFont", "lyricFontPath", "reducedMotion", "lyricDisplayMode", "backgroundShade", "cameraMotion", "background"};
         for (const auto& item : document.items()) if (!known.contains(item.key())) ThemeNote(warnings, L"忽略未知主题字段：" + ThemeFromUtf8(item.key()));
         result.diagnostic = warnings.empty() ? L"主题数据已解析" : warnings;
         result.ok = true;
@@ -353,7 +386,14 @@ ThemeResult LoadTheme(const std::filesystem::path& selectedFile) {
         std::string text;
         if(!ReadThemeFileBounded(file,text,error)){result.diagnostic=error;return result;}
         result = ParseThemeJson(text);
-        if (!result.ok || result.definition.backgroundKind == ThemeBackgroundKind::None) return result;
+        if(!result.ok)return result;
+        if(!result.definition.lyricFontPath.empty()){
+            std::filesystem::path font;bool exists=false;
+            if(!ThemeLocalPath(result.definition.lyricFontPath,file.parent_path(),font,error,&exists)){result.ok=false;result.diagnostic=L"lyricFontPath："+error;return result;}
+            result.definition.lyricFontPath=font;
+            if(!exists)ThemeNote(result.diagnostic,L"字体文件不存在，将使用主题原字体");
+        }
+        if (result.definition.backgroundKind == ThemeBackgroundKind::None) return result;
         std::filesystem::path material;
         bool exists = false;
         if (!ThemeLocalPath(result.definition.backgroundPath, file.parent_path(), material, error, &exists)) {
@@ -410,7 +450,17 @@ ThemeResult SaveThemeFile(const std::filesystem::path& selectedFile, const Theme
             result.definition.backgroundPath = material;
             if (!exists) ThemeNote(warnings, L"background.path 指定的本地材料不存在");
         }
+        if(!result.definition.lyricFontPath.empty()){
+            std::filesystem::path font;bool exists=false;
+            if(!ThemeLocalPath(result.definition.lyricFontPath,file.parent_path(),font,error,&exists)){result.diagnostic=L"lyricFontPath："+error;return result;}
+            result.definition.lyricFontPath=font;
+            if(!exists)ThemeNote(warnings,L"字体文件不存在，将使用主题原字体");
+        }
         auto exported = result.definition;
+        if(!exported.lyricFontPath.empty()){
+            const auto relative=exported.lyricFontPath.lexically_relative(file.parent_path());
+            if(!relative.empty()&&!relative.is_absolute()&&*relative.begin()!=L"..")exported.lyricFontPath=relative;
+        }
         if (!exported.backgroundPath.empty()) {
             const auto relative = exported.backgroundPath.lexically_relative(file.parent_path());
             if (!relative.empty() && !relative.is_absolute() && *relative.begin() != L"..") exported.backgroundPath = relative;

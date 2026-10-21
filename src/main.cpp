@@ -4,6 +4,7 @@
 #include "catalog_id.h"
 #include "version.h"
 #include "settings.h"
+#include "optional_lyric_font.h"
 #include "settings_writer.h"
 #include "diagnostic_log.h"
 #include "playback_log_sampling.h"
@@ -119,7 +120,7 @@ LyricContentChange CompareLyricContent(const LyricTimeline& a,const LyricTimelin
     bool auxiliaryChanged=false;
     for(size_t i=0;i<a.lines.size();++i){
         const auto& left=a.lines[i];const auto& right=b.lines[i];
-        if(left.startMs!=right.startMs||left.durationMs!=right.durationMs||left.text!=right.text||left.words.size()!=right.words.size())
+        if(left.startMs!=right.startMs||left.durationMs!=right.durationMs||left.text!=right.text||left.words.size()!=right.words.size()||left.credit!=right.credit)
             return LyricContentChange::Original;
         auxiliaryChanged=auxiliaryChanged||left.translation!=right.translation||left.romanization!=right.romanization;
         for(size_t j=0;j<left.words.size();++j){
@@ -130,12 +131,8 @@ LyricContentChange CompareLyricContent(const LyricTimeline& a,const LyricTimelin
     return auxiliaryChanged?LyricContentChange::AuxiliaryOnly:LyricContentChange::None;
 }
 size_t InitialLyricLine(const LyricTimeline& timeline) {
-    for(size_t i=0;i<timeline.lines.size();++i){
-        const auto& text=timeline.lines[i].text;bool credit=false;
-        for(auto prefix:{L"作词",L"作曲",L"编曲",L"制作",L"混音",L"录音",L"词：",L"曲：",L"词:",L"曲:",L"OP",L"SP",L"发行",L"监制",L"出品",L"吉他",L"钢琴",L"鼓：",L"鼓:",L"合声",L"和声",L"人声"})
-            if(text.starts_with(prefix)){credit=true;break;}
-        if(!credit)return i;
-    }
+    // Opening provider credits are visible content, including static preview.
+    for(size_t i=0;i<timeline.lines.size();++i)if(!timeline.lines[i].text.empty())return i;
     return 0;
 }
 std::string UtcNow() { SYSTEMTIME t{}; GetSystemTime(&t); char b[64]{}; sprintf_s(b,"%04u-%02u-%02uT%02u:%02u:%02u.%03uZ",t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond,t.wMilliseconds); return b; }
@@ -440,6 +437,7 @@ struct App {
     unsigned desktopPresentationReports=0;int64_t desktopPresentationReportAt=0;
     ThemeTransition themeTransition;std::optional<ThemePalette> displayedPalette;
     std::shared_ptr<const ThemeDefinition> customTheme;std::vector<std::pair<HWND,int>> pageControls;
+    std::wstring lyricFontNotice;
     bool themeRestorePending=false,preserveSavedThemeFile=false,themeRestoreStatePainted=false,themeRestoreShown=false;
     std::wstring themeRestoreDiagnostic,themeRestoreDiagnosticShown;
     std::filesystem::path privateThemeSaveFile,stagedRecoveryThemeFile;
@@ -2491,7 +2489,9 @@ struct App {
     }
     ThemeDefinition CurrentTheme() const {
         auto value=customTheme?*customTheme:BuiltInTheme(theme);
+        value.lyricFont=settings.lyricFont;value.lyricFontPath=settings.lyricFontPath;
         value.response=strength;value.lyricSize=settings.lyricSize;value.reducedMotion=settings.reducedMotion;value.lyricDisplayMode=settings.lyricDisplayMode;
+        value.motionVariant=settings.motionVariant;value.motionFx=settings.motionFx;value.motionCamera=settings.motionCamera;value.motionLines=settings.motionLines;value.motionBackground=settings.motionBackground;value.motionFilter=settings.motionFilter;
         value.backgroundShade=settings.backgroundShade;value.cameraMotion=settings.cameraMotion;
         value.backgroundKind=backgroundSelection==1?ThemeBackgroundKind::Image:backgroundSelection==2?ThemeBackgroundKind::Video:ThemeBackgroundKind::None;
         value.backgroundPath=value.backgroundKind==ThemeBackgroundKind::None?std::filesystem::path{}:std::filesystem::path(settings.backgroundPath);
@@ -2548,7 +2548,7 @@ struct App {
         SyncThemeControls();Persist();UpdateThemeRestoreNotice();
     }
     void SelectTheme(int choice) {
-        if(choice>=0&&choice<BuiltInStyleCount){theme=choice;customTheme.reset();themeRestorePending=false;themeRestoreDiagnostic.clear();}
+        if(choice>=0&&choice<BuiltInStyleCount){theme=NormalizeBuiltInStyle(choice);settings.motionVariant=-1;customTheme.reset();themeRestorePending=false;themeRestoreDiagnostic.clear();}
         else if(choice==CustomThemeChoice&&!customTheme){
             if(themeRestorePending){RetrySavedTheme();return;}
             auto value=CurrentTheme();value.name=L"我的音乐舞台";customTheme=std::make_shared<ThemeDefinition>(std::move(value));
@@ -2792,12 +2792,36 @@ struct App {
         else result=exporting?SaveTheme(file,CurrentTheme()):LoadTheme(file);
         uiNotice=result.diagnostic;
         if(!result.ok){MessageBoxW(window,result.diagnostic.c_str(),L"主题未能载入或保存",MB_OK|MB_ICONINFORMATION);return;}
-        if(!exporting){customTheme=std::make_shared<ThemeDefinition>(std::move(result.definition));themeRestorePending=false;themeRestoreDiagnostic.clear();theme=customTheme->baseStyle;strength=customTheme->response;settings.lyricSize=customTheme->lyricSize;settings.reducedMotion=customTheme->reducedMotion;settings.lyricDisplayMode=customTheme->lyricDisplayMode;
+        if(!exporting){customTheme=std::make_shared<ThemeDefinition>(std::move(result.definition));themeRestorePending=false;themeRestoreDiagnostic.clear();theme=customTheme->baseStyle;strength=customTheme->response;settings.lyricSize=customTheme->lyricSize;settings.lyricFont=customTheme->lyricFont;settings.lyricFontPath=customTheme->lyricFontPath.wstring();settings.reducedMotion=customTheme->reducedMotion;settings.lyricDisplayMode=customTheme->lyricDisplayMode;
+            settings.motionVariant=customTheme->motionVariant;settings.motionFx=customTheme->motionFx;settings.motionCamera=customTheme->motionCamera;settings.motionLines=customTheme->motionLines;settings.motionBackground=customTheme->motionBackground;settings.motionFilter=customTheme->motionFilter;
             settings.backgroundShade=customTheme->backgroundShade;settings.cameraMotion=customTheme->cameraMotion;
             if(customTheme->backgroundKind==ThemeBackgroundKind::None)UseCover();
             else{{std::lock_guard lock(data.mutex);backgroundSelection=customTheme->backgroundKind==ThemeBackgroundKind::Video?2:1;if(backgroundSelection==2)background.SetVideo(customTheme->backgroundPath);else background.SetImage(customTheme->backgroundPath);}settings.backgroundKind=backgroundSelection;settings.backgroundPath=customTheme->backgroundPath.wstring();}
             SyncThemeControls();Persist();}
         log.Event(exporting?"theme-export":"theme-import",exporting?"User-selected local theme destination":"User-selected local theme; original file preserved");
+    }
+    void ChooseLyricFont(bool importFile) {
+        std::wstring family,path;
+        if(importFile){
+            wchar_t selected[MaxLocalFilePathChars+1]{};OPENFILENAMEW ofn{sizeof(ofn)};
+            ofn.hwndOwner=window;ofn.lpstrFile=selected;ofn.nMaxFile=static_cast<DWORD>(std::size(selected));
+            ofn.lpstrFilter=L"字体 (*.ttf;*.otf)\0*.ttf;*.otf\0";ofn.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;
+            ModalScope modal(*this);if(!GetOpenFileNameW(&ofn)||exiting)return;path=selected;
+        }else{
+            LOGFONTW lf{};lf.lfHeight=-24;lf.lfCharSet=DEFAULT_CHARSET;
+            const auto current=settings.lyricFont.empty()||settings.lyricFont.front()==L'@'?std::wstring(L"Microsoft YaHei UI"):settings.lyricFont;
+            wcsncpy_s(lf.lfFaceName,current.c_str(),_TRUNCATE);
+            CHOOSEFONTW dialog{sizeof(dialog)};dialog.hwndOwner=window;dialog.lpLogFont=&lf;
+            dialog.Flags=CF_SCREENFONTS|CF_INITTOLOGFONTSTRUCT|CF_FORCEFONTEXIST|CF_NOSCRIPTSEL;
+            ModalScope modal(*this);if(!ChooseFontW(&dialog)||exiting)return;family=lf.lfFaceName;
+        }
+        Microsoft::WRL::ComPtr<IDWriteFactory> factory;
+        if(FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory),reinterpret_cast<IUnknown**>(factory.GetAddressOf()))))return;
+        OptionalLyricFont check;check.Select(factory.Get(),family,path);
+        if(!check.Active()){
+            lyricFontNotice=L"未能读取该字体。请选择有效的本地 TTF / OTF 文件（不超过 64 MiB）或已安装字体，原字体保持不变。";return;
+        }
+        settings.lyricFont=check.Family();settings.lyricFontPath=path;lyricFontNotice.clear();Persist();
     }
     void ChooseAccent() {
         auto value=CurrentTheme();static COLORREF colors[16]{};CHOOSECOLORW dialog{sizeof(dialog)};dialog.hwndOwner=window;dialog.lpCustColors=colors;dialog.rgbResult=RGB((int)(value.accent.r*255),(int)(value.accent.g*255),(int)(value.accent.b*255));dialog.Flags=CC_FULLOPEN|CC_RGBINIT;
@@ -2813,7 +2837,7 @@ struct App {
         SendMessageW(qualityCombo,CB_SETCURSEL,std::clamp(settings.qualityMode,0,3),0);
         SendMessageW(frameRateCombo,CB_SETCURSEL,std::clamp(settings.frameRateMode,0,2),0);
         SendMessageW(Control(ID_PAUSEFULLSCREEN),BM_SETCHECK,settings.pauseForFullscreenApps?BST_CHECKED:BST_UNCHECKED,0);
-        SendMessageW(themeCombo,CB_SETCURSEL,customTheme||themeRestorePending?CustomThemeChoice:theme,0);SendMessageW(strengthSlider,TBM_SETPOS,TRUE,(int)(strength*100));SendMessageW(sizeSlider,TBM_SETPOS,TRUE,(int)settings.lyricSize);SendMessageW(Control(ID_MOTION),BM_SETCHECK,settings.reducedMotion?BST_CHECKED:BST_UNCHECKED,0);SendMessageW(Control(ID_CLOCK),BM_SETCHECK,settings.nativeClockEnabled?BST_CHECKED:BST_UNCHECKED,0);
+        SendMessageW(themeCombo,CB_SETCURSEL,ThemeChoiceIndex(customTheme||themeRestorePending?CustomThemeChoice:theme),0);SendMessageW(strengthSlider,TBM_SETPOS,TRUE,(int)(strength*100));SendMessageW(sizeSlider,TBM_SETPOS,TRUE,(int)settings.lyricSize);SendMessageW(Control(ID_MOTION),BM_SETCHECK,settings.reducedMotion?BST_CHECKED:BST_UNCHECKED,0);SendMessageW(Control(ID_CLOCK),BM_SETCHECK,settings.nativeClockEnabled?BST_CHECKED:BST_UNCHECKED,0);
     }
     void SetPanel(bool visible) {
         if(!visible&&(GetFocus()==status||(settingsPane&&IsChild(settingsPane,GetFocus()))))SetFocus(window);
@@ -3184,9 +3208,12 @@ struct App {
             displayedPalette=palette;RedrawWindow(window,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);
         }
         nativeControls.SetTheme(DisplayedTheme());nativeControls.Advance(now);scene.palette=palette;
-        scene.view={theme,sceneOffset,strength,settings.lyricSize,previewIndex,panelVisible,fullscreen,false,settings.reducedMotion,showDiagnostics,customTheme};scene.view.coverBackground=backgroundSelection==0;
+        scene.view={};scene.view.lyricFont=settings.lyricFont;scene.view.lyricFontPath=settings.lyricFontPath;scene.view.theme=theme;scene.view.offsetMs=sceneOffset;scene.view.response=strength;scene.view.lyricSize=settings.lyricSize;
+        scene.view.previewIndex=previewIndex;scene.view.panelVisible=panelVisible;scene.view.fullscreen=fullscreen;
+        scene.view.reducedMotion=settings.reducedMotion;scene.view.diagnostics=showDiagnostics;scene.view.customTheme=customTheme;scene.view.coverBackground=backgroundSelection==0;
         scene.view.showTranslation=settings.showTranslation;scene.view.showRomanization=settings.showRomanization;
         scene.view.lyricDisplayMode=settings.lyricDisplayMode;scene.view.quietFullscreen=quietFullscreen;
+        scene.view.motionVariant=settings.motionVariant;scene.view.motionFx=settings.motionFx;scene.view.motionCamera=settings.motionCamera;scene.view.motionLines=settings.motionLines;scene.view.motionBackground=settings.motionBackground;scene.view.motionFilter=settings.motionFilter;
         scene.view.manualLyricBrowse=browseFrame;scene.view.backgroundShade=settings.backgroundShade;scene.view.cameraMotion=settings.cameraMotion;
         scene.view.previewScrollOffset=browseFrame?previewScrollOffset:0.f;
         scene.frameAtMs=now;
@@ -3216,7 +3243,6 @@ struct App {
                 scene.view.desktop=desktop;scene.view.panelVisible=desktop?false:panelVisible;scene.view.lite=HostLite(desktop);
                 scene.view.backstage=!desktop&&stageUi&&interfaceState.backstage;scene.ui=desktop?nullptr:stageUiList;
                 scene.view.consoleShown=!desktop&&stageUi&&stageInterface.ConsoleShown();
-                scene.view.originalDrawer=desktop?0.f:stageInterface.BackstageAmount();
                 const float pointerScale=WindowDpi(window)/96.f;
                 scene.view.pointerActive=!desktop&&uiMouseTracked&&lastClientPointer.x>=0&&lastClientPointer.y>=0;
                 scene.view.pointerX=lastClientPointer.x/pointerScale;scene.view.pointerY=lastClientPointer.y/pointerScale;
@@ -3273,6 +3299,8 @@ struct App {
         v.backgroundKind=std::clamp(backgroundSelection.load(),0,2);
         v.coverStatus=DisplayText(coverStatus.empty()?L"等待歌曲信息":coverStatus);
         {const auto current=DisplayedBackground(p,manualPreview);BackgroundNoteState(current,v.backgroundRetry,v.backgroundNotice);}
+        v.motionVariant=settings.motionVariant;v.motionFx=settings.motionFx;v.motionCamera=settings.motionCamera;v.motionLines=settings.motionLines;v.motionBackground=settings.motionBackground;v.motionFilter=settings.motionFilter;
+        v.lyricFont=settings.lyricFont;v.lyricFontPath=settings.lyricFontPath;v.lyricFontNotice=lyricFontNotice;
         v.lyricSize=settings.lyricSize;v.backgroundShade=settings.backgroundShade;v.cameraMotion=settings.cameraMotion;v.reducedMotion=settings.reducedMotion;
         v.qualityMode=settings.qualityMode;v.frameRateMode=settings.frameRateMode;v.pauseForFullscreenApps=settings.pauseForFullscreenApps;
         v.themeRestorePending=themeRestorePending;v.customThemeName=customTheme?DisplayText(customTheme->name):std::wstring{};
@@ -3351,6 +3379,9 @@ struct App {
             case UiCommand::ChooseVideo:ChooseBackground(true);break;
             case UiCommand::RetryBackground:RetryBackground();break;
             case UiCommand::SetResponse:strength=clamp(a.number,0.f,2.f,strength);settingsSaveAt=MonotonicMs()+500;SyncThemeControls();break;
+            case UiCommand::SetLyricFont:{const wchar_t* keys[]={L"",L"@wenkai",L"@huangyou",L"@kuaile"};settings.lyricFont=keys[std::clamp(a.value,0,3)];settings.lyricFontPath.clear();lyricFontNotice.clear();Persist();break;}
+            case UiCommand::ChooseSystemLyricFont:ChooseLyricFont(false);break;
+            case UiCommand::ImportLyricFont:ChooseLyricFont(true);break;
             case UiCommand::SetLyricSize:settings.lyricSize=std::round(clamp(a.number,26.f,80.f,settings.lyricSize));settingsSaveAt=MonotonicMs()+500;SyncThemeControls();break;
             case UiCommand::SetBackgroundShade:settings.backgroundShade=clamp(a.number,0.f,1.f,settings.backgroundShade);settingsSaveAt=MonotonicMs()+500;SyncThemeControls();break;
             case UiCommand::SetCameraMotion:settings.cameraMotion=clamp(a.number,0.f,2.f,settings.cameraMotion);settingsSaveAt=MonotonicMs()+500;SyncThemeControls();break;
@@ -3359,6 +3390,12 @@ struct App {
             case UiCommand::SetQuality:settings.qualityMode=std::clamp(a.value,0,3);SyncThemeControls();Persist();break;
             case UiCommand::SetFrameRate:settings.frameRateMode=std::clamp(a.value,0,2);SyncThemeControls();Persist();break;
             case UiCommand::SetPauseForFullscreen:settings.pauseForFullscreenApps=a.value!=0;SyncThemeControls();Persist();RefreshVisualMediaDemand();break;
+            case UiCommand::SetMotionVariant:settings.motionVariant=std::clamp(a.value,-1,255);settingsSaveAt=MonotonicMs()+300;break;
+            case UiCommand::SetMotionFx:settings.motionFx=std::clamp(a.value,0,5);settingsSaveAt=MonotonicMs()+300;break;
+            case UiCommand::SetMotionCamera:settings.motionCamera=std::clamp(a.value,0,2);settingsSaveAt=MonotonicMs()+300;break;
+            case UiCommand::SetMotionLines:settings.motionLines=std::clamp(a.value,1,10);settingsSaveAt=MonotonicMs()+300;break;
+            case UiCommand::SetMotionFilter:settings.motionFilter=std::clamp(a.value,0,4);settingsSaveAt=MonotonicMs()+300;break;
+            case UiCommand::SetMotionBackground:settings.motionBackground=std::clamp(a.value,0,4);settingsSaveAt=MonotonicMs()+300;break;
             case UiCommand::SelectStyle:SelectTheme(std::clamp(a.value,0,CustomThemeChoice));SyncThemeControls();break;
             case UiCommand::ImportTheme:ChooseTheme(false);break;
             case UiCommand::ExportTheme:ChooseTheme(true);break;
@@ -3561,7 +3598,7 @@ struct App {
         button(L"重试当前背景素材",ID_BACKGROUNDRETRY,1);make(L"STATIC",L"",ID_BACKGROUNDNOTE,1,SS_NOPREFIX);
         make(L"STATIC",L"主题风格",202,2);themeCombo=make(L"COMBOBOX",L"",ID_THEME,2,CBS_DROPDOWNLIST|WS_TABSTOP);
         if(!nativeControls.AttachCombo(themeCombo))log.Event("combo-theme","Theme combo kept standard painting");
-        for(auto name:{L"轻光流动",L"电影剧场",L"声色排版",L"声织",L"节拍拼贴",L"回声长卷",L"我的自定义主题"})SendMessageW(themeCombo,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(name));button(L"载入本地主题",ID_THEMEIMPORT,2);button(L"导出当前主题",ID_THEMEEXPORT,2);button(L"选择强调色",ID_ACCENT,2);make(L"STATIC",L"主题保存在你的电脑。\r\n\r\n可自定义配色、字号、动效和背景；导入时保留原始主题文件。\r\n\r\n背景素材使用本地引用，移动主题时请一起保留素材。",206,2);button(L"重试已保存主题",ID_THEMERESTORE,2);make(L"STATIC",L"",ID_THEMENOTE,2);
+        for(int i:AvailableBuiltInStyles){const auto definition=BuiltInTheme(i);SendMessageW(themeCombo,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(definition.name.c_str()));}SendMessageW(themeCombo,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(L"我的自定义主题"));button(L"载入本地主题",ID_THEMEIMPORT,2);button(L"导出当前主题",ID_THEMEEXPORT,2);button(L"选择强调色",ID_ACCENT,2);make(L"STATIC",L"主题保存在你的电脑。\r\n\r\n可自定义配色、字号、动效和背景；导入时保留原始主题文件。\r\n\r\n背景素材使用本地引用，移动主题时请一起保留素材。",206,2);button(L"重试已保存主题",ID_THEMERESTORE,2);make(L"STATIC",L"",ID_THEMENOTE,2);
         checkbox(L"显示接入诊断",ID_DIAGNOSTICS,3);checkbox(L"允许原生只读内部时钟",ID_CLOCK,3);
         make(L"EDIT",UsageHelpText,ID_USAGEHELP,3,ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL|WS_VSCROLL|WS_TABSTOP);
         checkbox(L"全屏空闲时隐藏辅助信息和指针",ID_AUTOHIDE,3);button(L"恢复设置保存",ID_SETTINGSREPAIR,3);make(L"STATIC",L"",ID_SETTINGSNOTE,3);status=make(L"EDIT",L"读取播放器、歌词与音频状态中…",204,-1,ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL|WS_VSCROLL|WS_TABSTOP);
@@ -3752,7 +3789,7 @@ LRESULT CALLBACK WindowProc(HWND h,UINT msg,WPARAM wp,LPARAM lp) {
             case ID_LYRICMEMORYREPAIR:app->RecoverTrackPreferenceSaving();break;
             case ID_THEMERESTORE:app->RetrySavedTheme();break;
             case ID_CLOCK:app->settings.nativeClockEnabled=SendMessageW(app->Control(ID_CLOCK),BM_GETCHECK,0,0)==BST_CHECKED;app->monitor.SetClientClockEnabled(app->settings.nativeClockEnabled);app->uiNotice=app->settings.nativeClockEnabled?L"原生只读内部时钟已开启；只有严格校验通过才会驱动歌词":L"原生只读内部时钟已关闭；仍保留 Windows 媒体会话与界面观测";app->Persist();break;
-            case ID_THEME:if(HIWORD(wp)==CBN_SELCHANGE)app->SelectTheme((int)SendMessageW(app->themeCombo,CB_GETCURSEL,0,0));break;
+            case ID_THEME:if(HIWORD(wp)==CBN_SELCHANGE)app->SelectTheme(ThemeIdAtChoice((int)SendMessageW(app->themeCombo,CB_GETCURSEL,0,0)));break;
             case ID_OFFSET:if(HIWORD(wp)==EN_CHANGE)app->OffsetChanged();else if(HIWORD(wp)==EN_KILLFOCUS)app->CommitOrRestoreOffsetText();break;
             case ID_OFFSETRESET:app->ResetOffset();break;
             case ID_ONLINELYRICS:app->RestoreOnlineLyrics();break;

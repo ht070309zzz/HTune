@@ -4,6 +4,7 @@
 #include "file_transaction.h"
 #include "local_file_limits.h"
 #include "lyrics.h"
+#include "lyric_credits.h"
 #include "catalog_id.h"
 #include "qq_lyrics.h"
 #include "kugou_lyrics.h"
@@ -183,6 +184,7 @@ void Finalize(LyricTimeline& timeline) {
             // Keep the original text and line clock. Zero-time punctuation in
             // an otherwise usable row is valid; a row with no animated text
             // must not advertise a continuous word highlight or invent time.
+            if(IsLyricCredit(line)){line.credit=true;line.words.clear();}
             if(!line.words.empty()&&!HasUsableWordTiming(line)){line.words.clear();lineFallback=true;}
             if (line.durationMs <= 0) line.durationMs = std::max<int64_t>(0, end - line.startMs);
         }
@@ -537,6 +539,7 @@ LyricTimeline ReadTimeline(const Json& document) {
         // not mark them as a notice. Local import parsing remains unchanged.
         timeline.emptyNoticeValidated=true;
     }
+    if(timeline.wordTimed&&!lrc.invalid&&!lrc.text.empty())MergeOpeningCredits(timeline,ParseLrc(lrc.text));
     timeline.retryWordTiming=!timeline.wordTimed&&yrcFailed;
     const auto attachChannel=[&](const char* preferred,const char* fallback,bool romanization){
         AttachSupplement(timeline,ParseLrc(LyricText(document,preferred)),romanization);
@@ -723,6 +726,7 @@ std::optional<LyricTimeline> LoadTimelineCacheHandle(const std::wstring& songId,
             line.startMs = *start;
             line.durationMs = *duration;
             line.text = std::move(*text);
+            if(const auto* credit=Field(row,"credit")){if(!credit->is_boolean())return std::nullopt;line.credit=credit->get<bool>();}
             if(Field(row,"translation")){
                 auto value=CacheText(row,"translation",MaxSupplementText);if(!value)return std::nullopt;line.translation=std::move(*value);
             }
@@ -821,7 +825,7 @@ std::string SerializeTimelineCache(const LyricTimeline& timeline) {
         for(const auto& word:line.words)
             words.push_back({{"startMs",word.startMs},{"durationMs",word.durationMs},{"text",TimelineCacheUtf8(word.text)}});
         rows.push_back({{"startMs",line.startMs},{"durationMs",line.durationMs},{"text",TimelineCacheUtf8(line.text)},
-            {"words",std::move(words)},{"translation",TimelineCacheUtf8(line.translation)},{"romanization",TimelineCacheUtf8(line.romanization)}});
+            {"credit",line.credit},{"words",std::move(words)},{"translation",TimelineCacheUtf8(line.translation)},{"romanization",TimelineCacheUtf8(line.romanization)}});
     }
     const Json data{{"schema",1},{"songId",ToUtf8(timeline.songId)},{"lines",std::move(rows)},
         {"emptyNoticeValidated",timeline.emptyNoticeValidated}};
@@ -1275,7 +1279,7 @@ LyricTimeline ParseLrc(const std::wstring& text) {
     return output;
 }
 
-bool IsBoundedYrcMetadata(std::wstring_view line) {
+bool IsBoundedYrcMetadata(std::wstring_view line,LyricLine* parsed=nullptr) {
     if(line.size()<2||line.size()>MaxLineText||line.front()!=L'{'||line.back()!=L'}'||
        line.find(L'\0')!=std::wstring_view::npos)return false;
     try{
@@ -1291,12 +1295,15 @@ bool IsBoundedYrcMetadata(std::wstring_view line) {
         }else if(time->is_number_integer()){
             const auto timestamp=time->get<int64_t>();if(timestamp<0||timestamp>MaxTime)return false;
         }else return false;
+        std::wstring joined;
         for(const auto& credit:*credits){
             if(!credit.is_object())return false;
             const auto* text=Field(credit,"tx");if(!text||!text->is_string())return false;
             const auto& bytes=text->get_ref<const std::string&>();
             if(bytes.size()>MaxSupplementText*4)return false;
+            const auto fragment=FromUtf8(bytes);if((!bytes.empty()&&fragment.empty())||fragment.find(L'\0')!=std::wstring::npos||fragment.size()>MaxLineText-joined.size())return false;joined+=fragment;
         }
+        if(parsed){parsed->startMs=time->get<int64_t>();parsed->text=Trim(joined);parsed->credit=true;}
         return true;
     }catch(...){return false;}
 }
@@ -1305,7 +1312,7 @@ LyricTimeline ParseYrc(const std::wstring& text) {
     LyricTimeline output;
     output.source = L"YRC";
     if (text.size() > MaxBytes) { output.state = LyricLoadState::Failed; output.diagnostic = L"歌词文本超过解析上限"; return output; }
-    size_t textUnits=0;
+    size_t textUnits=0;bool sawTimed=false;
     std::wstring failure;
     const bool allLinesRead=EachLine(text, [&](std::wstring_view raw) {
         if(!failure.empty())return;
@@ -1316,9 +1323,16 @@ LyricTimeline ParseYrc(const std::wstring& text) {
         // only the documented t/c shape before lyric rows; arbitrary text or
         // JSON embedded among timed rows still invalidates the whole channel.
         if(line.front()!=L'['){
-            if(output.lines.empty()&&IsBoundedYrcMetadata(line))return;
+            LyricLine credit;
+            if(!sawTimed&&IsBoundedYrcMetadata(line,&credit)){
+                if(!credit.text.empty()){
+                    if(output.lines.size()>=MaxLines||!AddTextUnits(textUnits,credit.text.size())){failure=L"YRC 制作信息超过解析上限";return;}
+                    output.lines.push_back(std::move(credit));
+                }return;
+            }
             failure=L"YRC 包含畸形的逐字歌词行";return;
         }
+        sawTimed=true;
         if(output.lines.size()>=MaxLines){failure=L"YRC 歌词行数超过解析上限";return;}
         const size_t end = line.find(L']'), comma = line.find(L',');
         if(end==std::wstring_view::npos||comma==std::wstring_view::npos||comma>end){
@@ -1328,6 +1342,11 @@ LyricTimeline ParseYrc(const std::wstring& text) {
         if (!Unsigned(line.substr(1, comma - 1), lyric.startMs) ||
             !Unsigned(line.substr(comma + 1, end - comma - 1), lyric.durationMs, 600000)){
             failure=L"YRC 包含越界或畸形的行时间标记";return;
+        }
+        if(IsLyricCreditText(line.substr(end+1))){
+            lyric.text=line.substr(end+1);lyric.credit=true;
+            if(!AddTextUnits(textUnits,lyric.text.size())){failure=L"YRC 制作信息超过解析上限";return;}
+            output.lines.push_back(std::move(lyric));return;
         }
         size_t position = end + 1;
         bool malformed = false;

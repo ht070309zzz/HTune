@@ -1,10 +1,11 @@
 // Original MusicStage concepts: woven acoustic curtain and echo contour scroll.
 // Procedural, frame-continuous geometry. No reference image is used as scenery.
+#include "stage_detail.hlsli"
 cbuffer OriginalConstants : register(b0) {
     float4 resolution; // px width/height, DPI, style
     float4 clock;      // animation time, track entrance, line entrance, motion
     float4 audio;
-    float4 pointer;    // normalized position, presence, drawer
+    float4 pointer;    // normalized position, presence, reserved
     float4 base;
     float4 accent;
     float4 ink;
@@ -26,7 +27,9 @@ float4 BackgroundPS(Surface i):SV_TARGET {
         color+=float3(.015,.013,.013)*sin(p.y*45+p.x*9)*.15;
     }
     if(resolution.w==5)color=lerp(base.rgb,float3(.955,.973,.966),saturate((p.y-.5)*.25));
-    return float4(saturate(color+grain),1);
+    float moving=clock.w>0?1:0;
+    float4 detail=ThemeDetail(p,resolution.x/resolution.y,clock.x*moving,audio.x*moving,audio.z*moving,(resolution.w==5?0:audio.w)*moving,accent.rgb,base.rgb,(int)resolution.w,pointer.w);
+    return float4(saturate(color*(1-detail.a)+detail.rgb+grain),1);
 }
 struct Thread {float4 position:SV_POSITION;float2 edge:TEXCOORD0;float4 color:COLOR0;};
 float2 VertexCorner(uint vertex) {

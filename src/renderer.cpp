@@ -1,11 +1,19 @@
+#include "lyric_glow.h"
 #include "renderer.h"
 #include "window_layout.h"
 #include "lyric_layout.h"
 #include "lyric_glyphs.h"
+#include "lyric_performance.h"
+#include "lyric_motion_balance.h"
+#include "glyph_ornament.h"
+#include "glyph_effects.h"
+#include "lyric_typography.h"
+#include "optional_lyric_font.h"
 #include "stage_gpu.h"
 #include "stage_compositor.h"
 #include "stage_ui_draw.h"
 #include "original_stages.h"
+#include "rift_stage.h"
 #include <d3d11.h>
 #include <dxgi1_3.h>
 #include <d2d1_1.h>
@@ -75,6 +83,9 @@ struct PlaybackContinuityIdentity {
 };
 struct Palette { D2D1_COLOR_F background, panel, ink, muted, accent, glow; };
 Palette Colors(int theme) {
+    if(IsMineradioStyle(theme))return {D2D1::ColorF(0x070910),D2D1::ColorF(0x171D27),D2D1::ColorF(0xF0F5FC),D2D1::ColorF(0x95A8BE),D2D1::ColorF(0x89CDE8),D2D1::ColorF(0xA993E4)};
+    if(IsFoliaStyle(theme)){const auto& v=FoliaStyles[theme-FirstFoliaStyle];return {D2D1::ColorF(v.background),D2D1::ColorF(v.panel),D2D1::ColorF(v.ink),D2D1::ColorF(v.muted),D2D1::ColorF(v.accent),D2D1::ColorF(v.accent)};}
+    if(theme==RiftStyle)return {D2D1::ColorF(0x08090C),D2D1::ColorF(0x111217),D2D1::ColorF(0xF4F2EE),D2D1::ColorF(0x929298),D2D1::ColorF(0xFF5A1F),D2D1::ColorF(0xFF5A1F)};
     if(theme==WeaveStyle)return {D2D1::ColorF(0x101112),D2D1::ColorF(0x191819),D2D1::ColorF(0xF6F0E8),D2D1::ColorF(0x858181),D2D1::ColorF(0xF7877E),D2D1::ColorF(0x8F443D)};
     if(theme==PosterStyle)return {D2D1::ColorF(0x073CDD),D2D1::ColorF(0x101112),D2D1::ColorF(0xFAFAF6),D2D1::ColorF(0xCFDDFD),D2D1::ColorF(0xDDFF00),D2D1::ColorF(0x1234AB)};
     if(theme==EchoStyle)return {D2D1::ColorF(0xFCFDFC),D2D1::ColorF(0xEFF3F0),D2D1::ColorF(0x153E30),D2D1::ColorF(0x8DA699),D2D1::ColorF(0x28664D),D2D1::ColorF(0xCBDCD1)};
@@ -125,8 +136,10 @@ struct MotionState {
     float consoleVisibility=0;
     bool initialized = false, scrollInitialized = false;
 };
-enum FontRole : int { FontChrome=0,FontChromeStrong,FontLyricFlow,FontLyricCinema,FontLyricType,FontSecondary,FontRoman,FontDisplay,FontCount };
-int LyricFont(int style) {return style==WeaveStyle?FontChrome:style==0||style==PosterStyle?FontLyricFlow:style==1||style==EchoStyle?FontLyricCinema:FontLyricType;}
+enum FontRole : int { FontChrome=0,FontChromeStrong,FontLyricFlow,FontLyricCinema,FontLyricType,FontSecondary,FontRoman,FontDisplay,FontLyricTech,FontCount };
+int LyricFont(int /*style*/) {
+    return FontLyricCinema;
+}
 struct SceneGeometry {
     float stageWidth = 0, height = 0;
     float lyricLeft = 0, lyricWidth = 0, lyricTop = 0, lyricBottom = 0, anchor = 0;
@@ -148,8 +161,13 @@ SceneGeometry Geometry(float width, float height, int style, const SceneView& vi
     g.railLeft=margin;g.railRight=std::max(margin+1.f,g.stageWidth-margin);
     g.railY=height-(g.compact?16.f:view.desktop?54.f:30.f);
     g.footerY=g.railY;
+    if(IsGlyphMotionStyle(style)){
+        g.lyricLeft=margin;g.lyricWidth=std::max(80.f,g.stageWidth-margin*2);
+        g.lyricTop=height*.20f;g.lyricBottom=height*.77f;g.anchor=height*.47f;
+        g.metaX=margin;g.metaY=35;g.metaWidth=g.lyricWidth;g.nowPlaying=6;return g;
+    }
     if(IsOriginalStyle(style)){
-        const auto original=ComposeOriginal(style,g.stageWidth,height,view.desktop?0.f:view.originalDrawer);
+        const auto original=ComposeOriginal(style,g.stageWidth,height);
         g.stageWidth=original.width;g.compact=original.compact;
         g.lyricLeft=original.lyricX;g.lyricWidth=original.lyricWidth;g.lyricTop=original.lyricY;
         g.lyricBottom=original.lyricY+original.lyricHeight;g.anchor=original.lyricY;
@@ -236,6 +254,9 @@ struct KineticItem {
 };
 struct KineticGuide { D2D1_POINT_2F from{},to{}; D2D1_MATRIX_3X2_F transform=D2D1::Matrix3x2F::Identity(); float opacity=0; };
 struct KineticRow {
+    std::vector<LyricColorSpan> effectSpans;
+    int64_t effectStart=0,effectDuration=0;uint32_t effectSeed=0;
+    bool effectFollowing=false;
     std::vector<KineticItem> items;
     std::vector<KineticGuide> guides;
     std::shared_ptr<const glyphs::Layout> source; // keeps runs referenced by items alive
@@ -262,6 +283,9 @@ struct SceneRenderer::Impl {
     ComPtr<ID3D11Texture2D> offscreenTexture; // preview target; no swap chain
     ComPtr<ID3D11Texture2D> backTexture;      // the texture behind backBuffer/backBufferView
     bool offscreen=false;
+    int64_t offscreenTimeMs=0;
+    std::unique_ptr<RiftStage> rift;
+    bool riftAttempted=false;
     std::unique_ptr<StageGpu> gpu;
     std::unique_ptr<OriginalStageGpu> originalGpu;
     OriginalStageState originalState;
@@ -279,7 +303,7 @@ struct SceneRenderer::Impl {
     ComPtr<IDWriteFactory> textFactory; ComPtr<IDWriteInlineObject> ellipsis;
     ComPtr<ID2D1SolidColorBrush> brush, accentBrush;
     ComPtr<ID2D1Bitmap1> bitmap, coverBitmap;
-    ComPtr<ID2D1Effect> coverScale, coverBlur, glowBlur;
+    ComPtr<ID2D1Effect> coverScale, coverBlur, glowBlur, glowWide, glowGain;
     uint64_t bitmapSequence = 0, coverSequence = 0;
     uint16_t bitmapOrientation=1;
     double bitmapPixelAspect=1.0;
@@ -299,6 +323,7 @@ struct SceneRenderer::Impl {
     ComPtr<IDWriteTextFormat> bodyFormat;
     struct FontSpec { std::wstring family; DWRITE_FONT_WEIGHT weight=DWRITE_FONT_WEIGHT_NORMAL; ComPtr<IDWriteFontFallback> fallback; };
     std::array<FontSpec,FontCount> fonts;
+    OptionalLyricFont optionalFont;
     struct TextEntry {
         std::wstring text;
         int role=FontChrome;
@@ -350,6 +375,34 @@ struct SceneRenderer::Impl {
     } lyricViewport;
     // Presentation-only entrance of a newly selected row (typography stage).
     size_t entryIndex=SIZE_MAX;int64_t entrySince=0;
+    uint64_t offscreenLyricGeometry=0;
+    std::shared_ptr<const LyricTimeline> performanceSource;
+    uint64_t performanceRevision=0;int performanceFont=-1;
+    LyricPerformance performance;
+    int64_t lyricInkTime=0;
+    std::unique_ptr<GlyphEffects> glyphEffects;GlyphEffectFrame glyphEffectFrame;
+    void PreparePerformance(const SceneInput& input,int style){
+        const int font=LyricFont(style);const auto rev=input.lyricReadingRevision?input.lyricReadingRevision:input.lyricRevision;
+        if(performanceSource==input.lyrics&&performanceRevision==rev&&performanceFont==font)return;
+        performanceSource=input.lyrics;performanceRevision=rev;performanceFont=font;performance={};
+        if(!input.lyrics)return;
+        performance=BuildLyricPerformance(*input.lyrics,[&](const std::wstring& text){
+            std::vector<LyricClusterMeasure> cells;
+            auto layout=Layout(text,65536,1024,64,font,DWRITE_TEXT_ALIGNMENT_LEADING,false).layout;
+            const auto shaped=Glyphs(layout);if(!shaped||!shaped->valid)return cells;
+            for(const auto& run:shaped->runs)for(size_t g=0;g<run.indices.size();++g){
+                const auto first=run.textPositions[g];auto found=std::find_if(cells.begin(),cells.end(),[&](const auto& c){return c.first==first;});
+                if(found==cells.end())cells.push_back({first,std::min<size_t>(text.size(),first+std::max(1u,run.textLengths[g])),std::max(0.f,run.advances[g])});
+                else {found->last=std::max(found->last,std::min<size_t>(text.size(),first+run.textLengths[g]));found->advance+=std::max(0.f,run.advances[g]);}}
+            return cells;
+        });
+    }
+    void ObserveLyricGeometry(const void* data,size_t bytes){
+        if(!offscreen)return;
+        if(!offscreenLyricGeometry)offscreenLyricGeometry=14695981039346656037ull;
+        const auto p=static_cast<const unsigned char*>(data);
+        for(size_t i=0;i<bytes;++i){offscreenLyricGeometry^=p[i];offscreenLyricGeometry*=1099511628211ull;}
+    }
     // Presentation cost: non-blocking GPU frame timing, an adaptive quality
     // tier (0 high .. 3 low) and the present cadence. None of this is timing
     // evidence for lyrics; it only scales visual work.
@@ -367,13 +420,13 @@ struct SceneRenderer::Impl {
         // Same-HWND flip recreation must complete deferred resource destruction.
         // https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-flush
         partialGeometry={};textCache.clear();glyphCache.clear(); ellipsis.Reset();
-        coverBlur.Reset(); coverScale.Reset(); glowBlur.Reset(); coverBitmap.Reset(); bitmap.Reset();
+        coverBlur.Reset(); coverScale.Reset(); glowBlur.Reset(); glowWide.Reset(); glowGain.Reset(); coverBitmap.Reset(); bitmap.Reset();
         thumbnailBrush.Reset();thumbnail.Reset();previousBackground.Reset();
         painter.reset();stageBitmap.Reset();blurBitmap.Reset();
         brush.Reset(); accentBrush.Reset(); for (auto& glow : glows) glow.brush.Reset(); scrim.Reset();
         for(auto& sweep:sweeps)sweep.brush.Reset();for(auto& shape:shapes)shape.Reset();
         if (target) target->SetTarget(nullptr);
-        backBufferView.Reset();backTexture.Reset();gpu.reset();compositor.reset();offscreenTexture.Reset();
+        backBufferView.Reset();backTexture.Reset();gpu.reset();rift.reset();glyphEffects.reset();compositor.reset();offscreenTexture.Reset();
         backBuffer.Reset(); target.Reset(); d2dDevice.Reset(); factory.Reset(); swap.Reset();
         if (context) { context->ClearState(); context->Flush(); }
         if (frameEvent) CloseHandle(frameEvent);
@@ -455,9 +508,12 @@ struct SceneRenderer::Impl {
         Check(target->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1), &accentBrush));
         painter=std::make_unique<ui::Painter>();
         target->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-        if(!software&&SUCCEEDED(target->CreateEffect(CLSID_D2D1GaussianBlur,&glowBlur))){
+        if(SUCCEEDED(target->CreateEffect(CLSID_D2D1GaussianBlur,&glowBlur))){
             if(FAILED(glowBlur->SetValue(D2D1_GAUSSIANBLUR_PROP_OPTIMIZATION,D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED)))glowBlur.Reset();
         }
+        if(glowBlur&&SUCCEEDED(target->CreateEffect(CLSID_D2D1GaussianBlur,&glowWide)))
+            Check(glowWide->SetValue(D2D1_GAUSSIANBLUR_PROP_OPTIMIZATION,D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED));
+        if(glowBlur)Check(target->CreateEffect(CLSID_D2D1ColorMatrix,&glowGain));
         CreateShapes();
         // Optional: without timestamp queries the tier simply stays put.
         for(auto& timing:timings){
@@ -539,10 +595,7 @@ struct SceneRenderer::Impl {
     // reduced motion keeps the final framing and cross-fades instead.
     // Returns true while anything moves, which keeps the full cadence.
     bool UpdateBackstage(const SceneView& view,float dt) {
-        if(IsOriginalStyle(view.customTheme?view.customTheme->baseStyle:view.theme)){
-            const bool changed=backstageValue!=0;backstageValue=backstageVelocity=0;backstageMix=1;return changed;
-        }
-        const float goal=view.backstage&&compositor?1.f:0.f;
+        const float goal=view.backstage&&!view.desktop&&compositor?1.f:0.f;
         const float valueBefore=backstageValue,mixBefore=backstageMix;
         if(view.reducedMotion){
             if(backstageValue<=0.f)backstageMix=0.f; // a fade starts from the plain stage
@@ -644,10 +697,20 @@ struct SceneRenderer::Impl {
         else if(latinDisplay)fonts[FontLyricType]={latinDisplay,DWRITE_FONT_WEIGHT_BOLD,CjkFallback(sans)};
         else fonts[FontLyricType]={sans,DWRITE_FONT_WEIGHT_BOLD,{}};
         fonts[FontDisplay]=fonts[FontLyricType];
+        // Dedicated lyric roles keep UI, metadata and subtitles unchanged.
+        const auto serif=ResolveLyricTypeface(system.Get(),LyricTypefaceKind::Serif);
+        const auto book=ResolveLyricTypeface(system.Get(),LyricTypefaceKind::Book);
+        const auto display=ResolveLyricTypeface(system.Get(),LyricTypefaceKind::Display);
+        fonts[FontLyricFlow]=fonts[FontLyricCinema]={serif.family,serif.weight,{}};
+        fonts[FontLyricType]={book.family,book.weight,{}};
+        fonts[FontLyricTech]={display.family,display.weight,{}};
     }
     void Format(float size, ComPtr<IDWriteTextFormat>& out, int role) {
         const auto& font=fonts[std::clamp(role,0,FontCount-1)];
         out.Reset();
+        if(optionalFont.Active()&&(role==FontLyricFlow||role==FontLyricCinema||role==FontLyricType||role==FontLyricTech)){
+            Check(textFactory->CreateTextFormat(optionalFont.Family().c_str(),optionalFont.Collection(),optionalFont.Weight(),DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,size,L"zh-CN",&out));return;
+        }
         Check(textFactory->CreateTextFormat(font.family.empty()?L"Microsoft YaHei UI":font.family.c_str(), nullptr, font.weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, L"zh-CN", &out));
         if(font.fallback){ComPtr<IDWriteTextFormat1> format1;if(SUCCEEDED(out.As(&format1)))Check(format1->SetFontFallback(font.fallback.Get()));}
     }
@@ -1026,6 +1089,13 @@ struct SceneRenderer::Impl {
     void Background(const SceneGeometry& g, const Palette& colors, int style, const SceneView& view) {
         target->Clear(colors.background);
         const auto now=MonotonicMs();
+        if(IsGlyphMotionStyle(style)){
+            if(!view.coverBackground&&(bitmap||previousBackground)){
+                MediaLayer(g.stageWidth,g.height,now,1,colors.background);
+                Fill(D2D1::RectF(0,0,g.stageWidth,g.height),WithAlpha(colors.background,.60f+.35f*motion.backgroundShade));
+            }
+            return;
+        }
         if (bitmap||previousBackground) {
             const float zoom=CameraZoom();
             MediaLayer(g.stageWidth,g.height,now,zoom,colors.background);
@@ -1069,6 +1139,7 @@ struct SceneRenderer::Impl {
         frame.stageWidth=g.stageWidth*scale;frame.height=g.height*scale;frame.dpiScale=scale;
         frame.style=style;frame.low=motion.low;frame.mid=motion.mid;frame.high=motion.high;frame.beat=motion.pulse;frame.rms=motion.rms;
         frame.response=motion.response;frame.camera=motion.cameraMotion;frame.motion=motion.amplitude;frame.shade=motion.backgroundShade;
+        frame.reducedMotion=view.reducedMotion;
         const bool light=Luminance(colors.background)>.45f;
         frame.lightBackground=light;
         frame.base=ToRgb(colors.background);frame.accent=ToRgb(colors.accent);
@@ -1114,7 +1185,7 @@ struct SceneRenderer::Impl {
                 const float h1=Hash01(i,101),h2=Hash01(i,211),h3=Hash01(i,307),h4=Hash01(i,401),h5=Hash01(i,503);
                 const float x=g.stageWidth*(.05f+.90f*h1)+std::sin(t*(.05f+.04f*h2)+i)*28.f*amplitude;
                 const float y=g.height*(.06f+.88f*h2)+std::cos(t*(.04f+.03f*h3)+i*2.f)*22.f*amplitude;
-                const float size=(14.f+44.f*h3)*(1.f+.06f*motion.pulse*motion.response);
+                const float size=(14.f+44.f*h3)*(1.f+(view.reducedMotion?0.f:.12f*std::sqrt(UnitSignal(motion.rms*motion.response)))+.06f*motion.pulse*motion.response);
                 const float angle=h4*360.f+t*(h5-.5f)*16.f*amplitude;
                 const float opacity=light?(.08f+.08f*h5):(.10f+.10f*h5);
                 const auto color=WithAlpha(i%4==0?colors.accent:Mix(colors.muted,colors.ink,.25f),opacity);
@@ -1198,6 +1269,9 @@ struct SceneRenderer::Impl {
     // Whole-layout fallback when glyph capture is unavailable.
     void ActiveLyric(IDWriteTextLayout* layout, UINT32 layoutLength,float x,float y,
         const WordProgress& progress,const Palette& colors,int style) {
+        if(offscreen){D2D1_MATRIX_3X2_F transform;target->GetTransform(&transform);
+            const float bounds[]={x,y,layout->GetMaxWidth(),layout->GetMaxHeight()};
+            ObserveLyricGeometry(bounds,sizeof(bounds));ObserveLyricGeometry(&transform,sizeof(transform));}
         const UINT32 length=layoutLength,complete=progress.complete,partialStart=progress.partialStart,partialLength=progress.partialLength;
         const float fraction=progress.fraction;
         if(length)Check(layout->SetDrawingEffect(nullptr,{0,length}));
@@ -1223,13 +1297,16 @@ struct SceneRenderer::Impl {
     }
     // Builds animated glyph items for one row. Timing input is the same
     // (offset-applied) lyric position used for row selection; words with
-    // no real timing never receive a synthetic sweep.
-    KineticRow BuildKinetic(const std::shared_ptr<const glyphs::Layout>& captured,D2D1_POINT_2F origin,const D2D1_MATRIX_3X2_F& rowTransform,
+    // presentation timing uses real words or the explicitly estimated view.
+    KineticRow BuildKinetic(const std::shared_ptr<const glyphs::Layout>& captured,D2D1_POINT_2F origin,const D2D1_MATRIX_3X2_F& baseRowTransform,
         const LyricLine& line,size_t displayLength,int64_t position,bool timed,bool following,bool lineLit,float activity,float rowOpacity,
         int style,uint64_t seed,float size,bool entryAnimated,float entryElapsedMs,DWRITE_TEXT_ALIGNMENT alignment,bool reducedMotion) const {
         KineticRow row;
         if(!captured||!captured->valid)return row;
+        row.effectSpans=LyricColorSpans(line,line.durationMs);row.effectFollowing=following;
+        row.effectStart=line.startMs;row.effectDuration=line.durationMs;row.effectSeed=static_cast<uint32_t>(seed);
         row.source=captured;
+        const auto rowTransform=baseRowTransform; // Keep 0.7.19 entrance; audio only drives scenery.
         const auto& runs=captured->runs;
         std::vector<WordSpan> words;
         if(timed){
@@ -1269,8 +1346,8 @@ struct SceneRenderer::Impl {
         const auto wordGlow=[&](const WordSpan& span){
             if(span.progress<=0.f)return 0.f;
             if(span.progress<1.f)return .55f+.45f*span.progress;
-            // Sung words keep only a faint glow so the current word leads.
-            return .18f+.82f*std::exp(-std::max(0.f,span.sinceEnd)/520.f);
+            // Keep a visible residue; the current syllable still leads.
+            return .34f+.66f*std::exp(-std::max(0.f,span.sinceEnd)/520.f);
         };
         const auto wordAccent=[&](const WordSpan& span){
             if(span.progress<=0.f)return 0.f;
@@ -1308,8 +1385,7 @@ struct SceneRenderer::Impl {
                     if(w>=0){
                         auto& span=words[w];
                         fill=glyphFill(span,span.offset,advance);span.offset+=advance;
-                        if(span.progress>0.f&&span.progress<1.f)glyphScale*=1.16f+.05f*std::sin(span.progress*3.14159f);
-                        else if(span.progress>=1.f)glyphScale*=1.03f;
+                        if(span.progress>0.f&&span.progress<1.f)glyphScale*=1.f+.055f*std::sin(span.progress*3.14159f);
                         accent=wordAccent(span)*fill;glow=wordGlow(span)*fill*(span.progress<1.f?1.f:.6f);
                     }else if(timed)fill=0.f;
                     const float a=activity*motionScale;
@@ -1318,9 +1394,9 @@ struct SceneRenderer::Impl {
                     if(entryAnimated){
                         // Staggered by reading order, capped so long lines land within ~1 s.
                         const float local=std::clamp((entryElapsedMs-std::min(static_cast<float>(ordinal)*26.f,520.f))/420.f,0.f,1.f);
-                        const float eased=EaseOutBack(local);
-                        dy+=(1.f-eased)*(-.55f*size);rotation+=(1.f-local)*(h3-.5f)*36.f;
-                        opacity*=std::clamp(local*1.6f,0.f,1.f);glyphScale*=.85f+.15f*eased;
+                        const float eased=BalancedLyricEntry(local);
+                        dy+=(1.f-eased)*(-.18f*size);rotation+=(1.f-local)*(h3-.5f)*12.f;
+                        opacity*=std::clamp(local*1.6f,0.f,1.f);glyphScale*=.95f+.05f*eased;
                     }
                     placed.push_back({&run,g,origin.x+run.origin.x+run.pen[g],baseline,advance,glyphScale,dy,rotation,opacity,fill,accent,glow*activity});
                 }
@@ -1340,6 +1416,7 @@ struct SceneRenderer::Impl {
                     item.transform=D2D1::Matrix3x2F::Translation(-p.x,-p.baseline)*D2D1::Matrix3x2F::Scale(p.scale,p.scale)*
                         D2D1::Matrix3x2F::Rotation(p.rotation,D2D1::Point2F(p.advance*p.scale*.5f,-ascent*.35f*p.scale))*
                         D2D1::Matrix3x2F::Translation(pen,p.baseline+p.dy)*rowTransform;
+                    item.sweep=p.fill>0.f&&p.fill<1.f;item.sweepX=p.x+p.fill*p.advance;
                     item.lit=p.fill;item.accent=p.accent;item.glow=p.glow;item.opacity=p.opacity;
                     row.items.push_back(item);pen+=p.advance*p.scale;
                 }
@@ -1405,6 +1482,21 @@ struct SceneRenderer::Impl {
         row.valid=!row.items.empty();
         return row;
     }
+    void EnterKinetic(KineticRow& row,const LyricLine& line,int64_t position,float size,bool enabled){
+        if(!enabled||line.words.empty())return;
+        const auto spans=LyricColorSpans(line,line.durationMs);
+        for(auto& item:row.items){if(!item.run||item.first>=item.run->textPositions.size())continue;
+            const auto at=LyricColorSpanAt(spans,item.run->textPositions[item.first]);if(at>=spans.size())continue;
+            const auto origin=std::max(line.startMs,spans.front().start);
+            const auto age=position-LyricEntryStart(origin,line.durationMs,spans.size(),at,spans[at].start);
+            if(age<0){item.opacity=0;continue;}
+            const float t=std::clamp(float(age)/230.f,0.f,1.f),e=BalancedLyricEntry(t);
+            const auto pivot=item.baseline;
+            item.transform=D2D1::Matrix3x2F::Scale(.95f+.05f*e,.95f+.05f*e,pivot)*
+                D2D1::Matrix3x2F::Translation(0,(1-e)*size*.10f)*item.transform;
+            item.opacity*=std::min(1.f,t*2.2f);
+        }
+    }
     ID2D1LinearGradientBrush* SweepBrush(D2D1_COLOR_F from,D2D1_COLOR_F to) {
         for(auto& entry:sweeps)if(entry.brush&&SameColor(entry.from,from)&&SameColor(entry.to,to))return entry.brush.Get();
         auto& entry=sweeps[sweepNext++%sweeps.size()];
@@ -1421,10 +1513,12 @@ struct SceneRenderer::Impl {
         for(const auto& item:row.items){
             if(!item.run||item.last<=item.first)continue;
             if(glowPass&&item.glow<=.01f)continue;
+            if(offscreen&&!glowPass){ObserveLyricGeometry(&item.baseline,sizeof(item.baseline));
+                ObserveLyricGeometry(&item.transform,sizeof(item.transform));ObserveLyricGeometry(&saved,sizeof(saved));}
             const auto slice=glyphs::Slice(*item.run,item.first,item.last);
             target->SetTransform(item.transform*saved);
             if(glowPass){
-                const float opacity=item.glow*item.opacity;
+                const float opacity=item.glow*item.opacity*ink.glowStrength;
                 if(item.sweep){
                     auto* sweep=SweepBrush(ink.glow,WithAlpha(ink.glow,0.f));
                     sweep->SetStartPoint(D2D1::Point2F(item.sweepX-feather*.5f,0));sweep->SetEndPoint(D2D1::Point2F(item.sweepX+feather*.5f,0));
@@ -1450,6 +1544,40 @@ struct SceneRenderer::Impl {
                 if(blend<1.f)color=Mix(row.resting,color,blend);
                 brush->SetColor(WithAlpha(color,item.opacity));
                 target->DrawGlyphRun(item.baseline,&slice,brush.Get(),item.run->measuring);
+            }
+            if(row.activity>.5f&&row.effectFollowing&&!glyphEffectFrame.reduced&&item.opacity>.005f){
+                glyphEffectFrame.phrase=static_cast<uint64_t>(row.effectStart)+1;
+                const auto matrix=item.transform*saved;
+                const auto project=[&](float x,float y){return D2D1::Point2F(x*matrix._11+y*matrix._21+matrix._31,x*matrix._12+y*matrix._22+matrix._32);};
+                float pen=item.baseline.x;
+                for(size_t k=item.first;k<item.last;++k){
+                    const float advance=item.run->advances[k],glyphHeight=item.run->ascent+item.run->descent;
+                    const float x=item.run->Rtl()?pen-advance:pen,y=item.baseline.y-item.run->ascent;
+                    const auto at=LyricColorSpanAt(row.effectSpans,item.run->textPositions[k]);
+                    if(advance>item.run->emSize*.2f&&at<row.effectSpans.size()){
+                        const auto& span=row.effectSpans[at];
+                        const auto start=LyricEntryStart(std::max(row.effectStart,row.effectSpans.front().start),row.effectDuration,row.effectSpans.size(),at,span.start);
+                        GlyphEmitter e;e.corners={project(x,y),project(x+advance,y),project(x+advance,y+glyphHeight),project(x,y+glyphHeight)};
+                        e.color=ink.accentLit;e.color.a=item.opacity*row.activity;e.age=float(lyricInkTime-start)*.001f;
+                        const float fill=item.sweep?std::clamp((item.sweepX-x)/std::max(.001f,advance),0.f,1.f):item.lit;
+                        if(fill<=0){e.color=ink.dim;e.color.a=item.opacity*row.activity*.25f;}
+                        e.progress=fill;e.active=GlyphSingingLight(fill);e.seed=float((row.effectSeed+item.run->textPositions[k]*173+item.run->indices[k])%65521);
+                        if(e.age>=0)glyphEffectFrame.Add(e);
+                    }
+                    pen+=item.run->Rtl()?-advance:advance;
+                }
+            }
+            if(row.activity>.5f){
+                float glyphWidth=0;for(size_t k=item.first;k<item.last;++k)glyphWidth+=item.run->advances[k];
+                const float em=item.run->emSize,glyphHeight=item.run->ascent+item.run->descent;
+                if(glyphWidth>em*.2f){const float x=item.baseline.x-(item.run->Rtl()?glyphWidth:0),y=item.baseline.y-item.run->ascent;
+                    const float active=item.lit>0&&item.lit<1?1.f:.12f*item.lit;
+                    const auto decor=MakeGlyphOrnament(static_cast<uint32_t>(item.run->textPositions[item.first]*173+item.run->indices[item.first]),float(lyricInkTime)*.001f,active,true,qualityTier);
+                    for(size_t k=0;k<decor.count;++k){const auto& m=decor.marks[k];brush->SetColor(WithAlpha(ink.accentLit,m.alpha*item.opacity*row.activity));
+                        const float px=x+glyphWidth*m.x,py=y+glyphHeight*m.y;
+                        if(m.particle)target->FillEllipse(D2D1::Ellipse({px,py},std::max(.6f,glyphWidth*m.w*.5f),std::max(.6f,glyphHeight*m.h*.5f)),brush.Get());
+                        else target->FillRectangle(D2D1::RectF(px-std::max(.55f,glyphWidth*m.w*.5f),py-std::max(.55f,glyphHeight*m.h*.5f),px+std::max(.55f,glyphWidth*m.w*.5f),py+std::max(.55f,glyphHeight*m.h*.5f)),brush.Get());}
+                }
             }
         }
         if(!glowPass)for(const auto& guide:row.guides){
@@ -1543,7 +1671,30 @@ struct SceneRenderer::Impl {
         if(!view.coverBackground&&view.backgroundShade>0)Fill(D2D1::RectF(0,0,g.stageWidth,g.height),WithAlpha(colors.background,view.backgroundShade*.35f));
         (void)now;
     }
-    void OriginalLyrics(const SceneInput& input,const SceneView& view,const SceneGeometry& g,const Palette& colors,int style,
+    ComPtr<ID2D1CommandList> RecordGlyphGlow(const KineticRow* rows,size_t count,const StageInk& ink,float feather){
+        ComPtr<ID2D1CommandList> list;if(!glowBlur||ink.glowStrength<=.01f)return list;
+        bool any=false;for(size_t n=0;n<count;++n)for(const auto& item:rows[n].items)any|=item.glow>.01f;
+        if(!any)return list;
+        Check(target->CreateCommandList(&list));ComPtr<ID2D1Image> saved;target->GetTarget(&saved);target->SetTarget(list.Get());
+        for(size_t n=0;n<count;++n)if(rows[n].valid)DrawKineticItems(rows[n],ink,feather,true);
+        target->SetTarget(saved.Get());Check(list->Close());return list;
+    }
+    void DrawGlyphGlow(ID2D1CommandList* list,const StageInk& ink,float size){
+        if(!list)return;D2D1_MATRIX_3X2_F saved;target->GetTransform(&saved);target->SetTransform(D2D1::Matrix3x2F::Identity());
+        const auto mode=ink.lightStage?D2D1_COMPOSITE_MODE_SOURCE_OVER:D2D1_COMPOSITE_MODE_PLUS;
+        const float radius=LyricGlowRadius(size);
+        const auto diffuse=[&](ID2D1Effect* blur,float spread,bool wide){
+            blur->SetInput(0,list);Check(blur->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION,spread));
+            const float gain=LyricGlowGain(wide,ink.lightStage);
+            const D2D1_MATRIX_5X4_F matrix={gain,0,0,0,0,gain,0,0,0,0,gain,0,0,0,0,gain,0,0,0,0};
+            glowGain->SetInputEffect(0,blur);Check(glowGain->SetValue(D2D1_COLORMATRIX_PROP_COLOR_MATRIX,matrix));
+            target->DrawImage(glowGain.Get(),D2D1_INTERPOLATION_MODE_LINEAR,mode);
+        };
+        if(glowWide)diffuse(glowWide.Get(),radius*2.5f,true);
+        diffuse(glowBlur.Get(),radius,false);
+        target->SetTransform(saved);
+    }
+    void OriginalLyrics(const SceneInput& input,const SceneView& view,const SceneGeometry& g,const Palette& colors,int style,const StageInk& ink,
         bool synced,bool precise,int64_t position,float dt,int64_t now,std::optional<PresentedLyricPosition>& selectedLine,LyricViewportState& nextViewport) {
         if(!input.lyrics||input.lyrics->lines.empty())return;
         const auto& lines=input.lyrics->lines;
@@ -1554,17 +1705,9 @@ struct SceneRenderer::Impl {
         lastStyle=style;lastTimeline=input.lyrics;lastLyricRevision=input.lyricRevision;lastLyricReadingRevision=revision;
         std::wstring display=line.text.empty()?L"· · ·":line.text;
         auto progress=CurrentWord(line,position,synced&&precise);
-        bool posterPair=false;
-        // Short CJK poster lines receive a deliberate two-line composition.
-        // Offset all timing ranges across the inserted visual line break.
-        if(style==PosterStyle&&display.size()>=6&&display.size()<=16&&
-           std::all_of(display.begin(),display.end(),[](wchar_t c){return c>=0x3400&&c<=0x9fff;})){
-            posterPair=true;
-            const auto split=static_cast<UINT32>(display.size()/2);display.insert(split,1,L'\n');
-            const auto remap=[split](UINT32& start,UINT32& length){if(start>=split)++start;else if(start+length>split)++length;};
-            if(progress.complete>=split)++progress.complete;
-            remap(progress.partialStart,progress.partialLength);remap(progress.focusStart,progress.focusLength);
-        }
+        // Short phrase groups keep provider text order without inserting a
+        // display-only newline into the timed UTF-16 ranges.
+        const bool posterPair=false;
         const float factor=std::clamp(view.lyricSize/44.f,.59f,1.82f);
         // A wrapped paragraph must remain inside the blue plane at its top;
         // short two-line headlines may use the wider blue area further down.
@@ -1590,14 +1733,23 @@ struct SceneRenderer::Impl {
         const float maximum=std::max(0.f,measured-available);
         selectedLine=PresentedLyricPosition{index,offset,maximum,std::max(16.f,size*.72f),std::max(24.f,available*.75f)};
         const float enter=originalState.RowEnter(now,view.reducedMotion);
+        const float liftRoom=std::min(18.f,size*(style==PosterStyle?.12f:.08f));
         const float shift=style==PosterStyle?(1.f-enter)*24.f:0.f;
         auto textColors=colors;textColors.ink.a*=.50f+.50f*enter;textColors.accent.a*=.50f+.50f*enter;
-        target->PushAxisAlignedClip(D2D1::RectF(g.lyricLeft-2.f,g.lyricTop,g.lyricLeft+textWidth+2.f,g.lyricTop+available),D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        ActiveLyric(layout.Get(),static_cast<UINT32>(display.size()),g.lyricLeft,g.lyricTop-offset+shift,progress,textColors,style);
+        auto row=BuildKinetic(Glyphs(layout),{g.lyricLeft,g.lyricTop-offset+shift},D2D1::Matrix3x2F::Identity(),
+            line,display.size(),position,synced&&!line.words.empty(),synced,true,1.f,.50f+.50f*enter,style,revision^index,size,false,0,g.alignment,view.reducedMotion);
+        row.activity=1;row.resting=colors.ink;EnterKinetic(row,line,position,size,synced&&!view.reducedMotion);
+        auto light=RecordGlyphGlow(&row,1,ink,std::max(3.f,size*.07f));
+        // Give the diffuse light breathing room; crisp ink keeps its original clip.
+        DrawGlyphGlow(light.Get(),ink,size);
+        target->PushAxisAlignedClip(D2D1::RectF(g.lyricLeft-2.f,std::max(0.f,g.lyricTop-liftRoom),g.lyricLeft+textWidth+2.f,g.lyricTop+available),D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        if(row.valid)DrawKineticItems(row,ink,std::max(3.f,size*.07f),false);
+        else ActiveLyric(layout.Get(),static_cast<UINT32>(display.size()),g.lyricLeft,g.lyricTop-offset+shift,progress,textColors,style);
         target->PopAxisAlignedClip();
-        float y=g.lyricTop+std::min(measured,available)+10.f;
-        if(view.showTranslation&&!line.translation.empty()){Text(line.translation,g.lyricLeft,y,g.lyricWidth,30.f,std::clamp(size*.27f,12.f,24.f),colors.muted,g.alignment,FontSecondary);y+=32.f;}
-        if(view.showRomanization&&!line.romanization.empty()){Text(line.romanization,g.lyricLeft,y,g.lyricWidth,24.f,std::clamp(size*.22f,11.f,19.f),colors.muted,g.alignment,FontRoman);y+=26.f;}
+        float y=g.lyricTop+std::min(measured-offset,available)+shift+10.f;
+        const auto auxiliaryInk=WithAlpha(colors.muted,.50f+.50f*enter);
+        if(view.showTranslation&&!line.translation.empty()){Text(line.translation,g.lyricLeft,y,textWidth,30.f,std::clamp(size*.27f,12.f,24.f),auxiliaryInk,g.alignment,FontSecondary);y+=32.f;}
+        if(view.showRomanization&&!line.romanization.empty()){Text(line.romanization,g.lyricLeft,y,textWidth,24.f,std::clamp(size*.22f,11.f,19.f),auxiliaryInk,g.alignment,FontRoman);y+=26.f;}
         if(showNext&&index+1<lines.size()){
             const float nextSize=std::clamp(size*(style==PosterStyle?.23f:.52f),15.f,52.f);
             if(y+nextSize<g.railY-22.f)Text(lines[index+1].text,g.lyricLeft,y,g.lyricWidth,std::min(nextSize*2.f,g.railY-y-22.f),nextSize,WithAlpha(colors.muted,.85f),g.alignment,font);
@@ -1618,11 +1770,120 @@ struct SceneRenderer::Impl {
             }
         }
     }
+    void RiftLyrics(const SceneInput& input,const SceneView& view,const SceneGeometry& g,const Palette& colors,
+        int style,bool synced,bool precise,int64_t position,int64_t now,std::optional<PresentedLyricPosition>& selectedLine,LyricViewportState& nextViewport){
+        RiftFrame f;f.lyrics=input.lyrics;f.revision=input.lyricReadingRevision?input.lyricReadingRevision:input.lyricRevision;
+        f.kind=MotionKind(style);f.particlePreset=IsMineradioStyle(style)?style-FirstMineradioStyle:0;f.cover=input.background.frame;f.pointerX=view.pointerX;f.pointerY=view.pointerY;f.pointerActive=view.pointerActive;f.variant=view.motionVariant;f.motionFx=view.motionFx;f.motionCamera=view.motionCamera;f.motionLines=view.motionLines;f.motionBackground=view.motionBackground;f.motionFilter=view.motionFilter;f.background=colors.background;
+        f.identity=std::to_wstring(input.playback.pid)+L"/"+std::to_wstring(input.playback.processCreatedAtTicks)+L"/"+
+            input.playback.songId+L"/"+input.playback.title+L"/"+input.playback.artist;
+        if(input.manualLyricPreview)f.identity=L"preview/"+input.lyricPreviewTitle+L"/"+(input.lyrics?input.lyrics->songId:L"");
+        f.positionMs=position;f.nowMs=now;f.previewIndex=view.previewIndex;
+        f.lyricFont=view.lyricFont;f.lyricFontPath=view.lyricFontPath;
+        f.width=g.stageWidth;f.height=g.height;f.dpi=scale;f.lyricSize=view.lyricSize;f.browseOffset=view.previewScrollOffset;
+        f.spectrum=motion.spectrum;f.rms=motion.rms;f.low=motion.low;f.mid=motion.mid;f.high=motion.high;f.pulse=motion.pulse;
+        f.response=motion.response;f.camera=motion.cameraMotion;f.quality=qualityTier;f.ink=colors.ink;f.accent=colors.accent;
+        f.following=synced;f.precise=precise;f.playing=synced&&input.playback.state==PlayState::Playing;f.reduced=view.reducedMotion;
+        f.phraseEntry=input.lyrics==performance.timeline;
+        f.showTranslation=view.showTranslation;f.showRomanization=view.showRomanization;
+        f.sampled=CurrentTimelineSource(input.playback,now)==TimelineSource::SampledClock;f.sampledAtMs=input.playback.sampledAtMs;
+        f.paused=input.playback.state==PlayState::Paused||input.playback.state==PlayState::Stopped;
+        f.focused=view.lyricDisplayMode==1;if(f.focused)f.camera*=.65f;
+        // D3D builds a separate transparent texture between complete D2D passes.
+        // Never draw into or sample the back buffer while D2D owns its transaction.
+        Check(target->EndDraw());auto* layer=rift->Render(f,target.Get());
+        target->BeginDraw();target->SetTransform(D2D1::Matrix3x2F::Identity());
+        target->DrawBitmap(layer,D2D1::RectF(0,0,g.stageWidth,g.height),1,D2D1_INTERPOLATION_MODE_LINEAR);
+        const auto state=rift->Reading();
+        if(input.lyrics&&!input.lyrics->lines.empty()){
+            const auto& line=input.lyrics->lines[state.line];
+            if(!state.valid&&!line.text.empty())Text(line.text,g.lyricLeft,g.lyricTop,g.lyricWidth,g.lyricBottom-g.lyricTop,
+                std::clamp(view.lyricSize,26.f,80.f),WithAlpha(colors.ink,state.awaitingWords?.32f:1.f),DWRITE_TEXT_ALIGNMENT_CENTER,FontLyricFlow);
+            selectedLine=PresentedLyricPosition{state.line,state.offset,state.maxOffset,state.step,state.step};
+            nextViewport.initialized=true;nextViewport.first=state.line;nextViewport.offsets[0]=state.offset;
+            lastStyle=style;lastTimeline=input.lyrics;lastLyricReadingRevision=f.revision;
+            float y=g.height*.79f;const float aux=std::clamp(g.stageWidth*.015f,12.f,26.f);
+            if(state.auxiliaryVisible)y=state.auxiliaryTransform[5]+state.auxiliaryHeight*state.auxiliaryTransform[3]+12.f;
+            if(view.lyricDisplayMode==2&&state.line+1<input.lyrics->lines.size()&&y+aux*1.5f<g.railY-24.f)
+                Text(input.lyrics->lines[state.line+1].text,g.lyricLeft,y,g.lyricWidth,aux*1.5f,aux*.78f,WithAlpha(colors.muted,.55f),DWRITE_TEXT_ALIGNMENT_CENTER,FontSecondary);
+        }
+    }
+    void RiftChrome(const SceneGeometry& g,const SceneView& view,const Palette& colors,const std::wstring& title,const std::wstring& artist){
+        const float opacity=motion.chromeVisibility*(1-motion.consoleVisibility*.75f);
+        const float edge=std::clamp(g.height*.065f,28.f,68.f),x=g.railLeft,y=view.desktop?30.f:38.f;
+        if(thumbnailBrush)Thumbnail(x,y,edge,opacity,colors,0);
+        const float left=x+(thumbnailBrush?edge+18.f:0.f),metaWidth=std::max(70.f,g.stageWidth-left-g.railLeft-115.f);
+        Text(title,left,y,metaWidth,30.f,std::clamp(g.stageWidth*.012f,12.f,20.f),WithAlpha(colors.ink,opacity*.85f),DWRITE_TEXT_ALIGNMENT_LEADING,FontChromeStrong);
+        Text(artist,left,y+28.f,metaWidth,24.f,12.f,WithAlpha(colors.muted,opacity),DWRITE_TEXT_ALIGNMENT_LEADING,FontSecondary);
+
+    }
+    void BackgroundFinish(const SceneGeometry& g,const Palette& colors,int style,const SceneView& view){
+        const float phase=view.reducedMotion?0.f:static_cast<float>(motion.phase)*.12f;
+        const float energy=view.reducedMotion?0.f:motion.low;
+        const float x=g.stageWidth*(.25f+.09f*std::sin(phase*.4f+style));
+        Glow(4,colors.accent,x,g.height*.16f,g.stageWidth*.34f,g.height*.24f,.11f+.09f*energy,g.stageWidth,g.height);
+        Glow(5,colors.glow,g.stageWidth-x,g.height*.84f,g.stageWidth*.38f,g.height*.23f,.09f+.055f*energy,g.stageWidth,g.height);
+        // Fine material contours stay in the margins. Poster uses its existing
+        // diagonal seam; other software fallbacks get layered flowing ribbons.
+        for(int layer=0;layer<(qualityTier>=2?3:6);++layer){D2D1_POINT_2F prior{};
+            for(int j=0;j<=48;++j){const float u=float(j)/48;
+                float v=style==PosterStyle?.13f+(layer%3)*.028f+u*.20f:.14f+(layer%3)*.035f+.045f*std::sin(u*7+phase*(.6f+layer*.15f)+layer);
+                if(layer>=3)v=1.f-v;
+                const auto point=D2D1::Point2F(u*g.stageWidth,v*g.height);
+                if(j){const float alpha=(.24f+.16f*energy)*(.3f+.7f*std::pow(.5f+.5f*std::sin(u*5-phase+layer),3.f));
+                    brush->SetColor(WithAlpha(colors.accent,alpha*.15f));target->DrawLine(prior,point,brush.Get(),6.f);
+                    brush->SetColor(WithAlpha(colors.accent,alpha));target->DrawLine(prior,point,brush.Get(),.9f);}
+                prior=point;}
+        }
+        // Bounded foreground/background light grains for the software path.
+        // They share the existing ambient clock; reduced motion freezes them.
+        const int dots=qualityTier>=2?24:64;
+        for(int i=0;i<dots;++i){const float seed=float(i)*2.399963f+style;
+            const float u=.5f+.47f*std::sin(seed+phase*(.04f+.01f*(i%3)));
+            const float v=.5f+.46f*std::sin(seed*1.71f-phase*(.07f+.02f*(i%3)));
+            const float margin=std::clamp(std::abs(v-.48f)*2.f,.13f,1.f);
+            const float alpha=(.20f+.24f*(.5f+.5f*std::sin(phase*1.8f+seed)))*margin*(1+energy*.4f);
+            const float radius=(i%3==0?1.8f:.85f)*std::clamp(g.height/720.f,.7f,1.6f);
+            const auto dot=D2D1::Point2F(u*g.stageWidth,v*g.height);
+            brush->SetColor(WithAlpha(colors.accent,alpha*.16f));target->FillEllipse(D2D1::Ellipse(dot,radius*3.2f,radius*3.2f),brush.Get());
+            brush->SetColor(WithAlpha(colors.accent,alpha));target->FillEllipse(D2D1::Ellipse(dot,radius,radius),brush.Get());
+        }
+    }
+    void OpeningCredits(const LyricTimeline& lyrics,size_t count,const SceneGeometry& g,const Palette& colors,int64_t position,bool compact){
+        if(!count)return;
+        const float creditWidth=compact?g.stageWidth*.84f:std::min(g.lyricWidth,g.stageWidth*.72f);
+        const float left=compact?g.stageWidth*.08f:g.lyricLeft;
+        if(compact){std::wstring text;for(size_t i=0;i<count&&i<8;++i){if(lyrics.lines[i].text.empty())continue;if(!text.empty())text+=L"   ·   ";text+=lyrics.lines[i].text;}
+            Text(text,left,g.height*.105f,creditWidth,g.height*.08f,std::clamp(g.height*.016f,11.f,18.f),WithAlpha(colors.muted,.85f),DWRITE_TEXT_ALIGNMENT_LEADING,FontSecondary);return;}
+        constexpr size_t pageSize=6;const size_t pages=(count+pageSize-1)/pageSize;
+        const auto end=count<lyrics.lines.size()?lyrics.lines[count].startMs:std::max<int64_t>(6000,count*1400);
+        const int64_t pageSpan=std::max<int64_t>(1000,end/static_cast<int64_t>(pages));
+        const size_t first=std::min(pages-1,static_cast<size_t>(std::max<int64_t>(0,position)/pageSpan))*pageSize;
+        const size_t amount=std::min(pageSize,count-first);
+        const float available=g.lyricBottom-g.lyricTop,row=std::min(available/std::max<size_t>(1,amount),g.height*.075f);
+        const float size=std::clamp(row*.42f,12.f,32.f),top=g.lyricTop+std::max(0.f,(available-row*amount)*.35f);
+        for(size_t i=0;i<amount;++i){const auto& credit=lyrics.lines[first+i];
+            Text(credit.text,left,top+row*i,creditWidth,row*.95f,size,WithAlpha(colors.ink,.88f),DWRITE_TEXT_ALIGNMENT_LEADING,FontSecondary);}
+    }
     void Lyrics(const SceneInput& input,const SceneView& view,const SceneGeometry& g,const Palette& colors,const StageInk& ink,int style,bool synced,bool precise,int64_t lyricPosition,float dt,int64_t now,std::optional<PresentedLyricPosition>& selectedLine,LyricViewportState& nextViewport) {
         static const std::vector<LyricLine> empty;
         const auto& lines = input.lyrics ? input.lyrics->lines : empty;
+        const size_t credits=input.lyrics?LeadingCreditCount(*input.lyrics):0;
+        const bool showCredits=credits&&(synced?(credits==lines.size()||lyricPosition<lines[credits].startMs):view.previewIndex<credits);
+        if(!IsGlyphMotionStyle(style)&&rift){rift.reset();riftAttempted=false;}
+        if(IsGlyphMotionStyle(style)){
+            if(!riftAttempted){
+                riftAttempted=true;rift=std::make_unique<RiftStage>();
+                try{rift->Create(device.Get(),textFactory.Get());}catch(const std::exception&){rift.reset();}
+            }
+            if(rift){auto scenery=input;if(showCredits)scenery.lyrics.reset();
+                RiftLyrics(scenery,view,g,colors,style,synced,precise,lyricPosition,now,selectedLine,nextViewport);
+                if(!showCredits&&!lines.empty())return;}
+        }
+        if(showCredits){OpeningCredits(*input.lyrics,credits,g,colors,lyricPosition,false);
+            const auto at=synced?std::min(credits-1,LyricLineAt(lines,lyricPosition)):std::min(credits-1,view.previewIndex);
+            selectedLine=PresentedLyricPosition{at,0,0,24,24};nextViewport.initialized=true;nextViewport.first=at;return;}
         if(IsOriginalStyle(style)&&!lines.empty()){
-            OriginalLyrics(input,view,g,colors,style,synced,precise,lyricPosition,dt,now,selectedLine,nextViewport);return;
+            OriginalLyrics(input,view,g,colors,style,ink,synced,precise,lyricPosition,dt,now,selectedLine,nextViewport);return;
         }
         const int lyricFont=LyricFont(style);
         if (lines.empty()) {
@@ -1785,6 +2046,7 @@ struct SceneRenderer::Impl {
                 line,layoutLengths[n],lyricPosition,rowTimed,synced,true,role,placement[n].opacity,style,
                 (static_cast<uint64_t>(readingRevision)<<20)^index,size,entryAnimated&&index==selected,
                 static_cast<float>(std::clamp<int64_t>(now-entrySince,0,600000)),g.alignment,view.reducedMotion);
+            EnterKinetic(kinetic[n],line,lyricPosition,size,synced&&!view.reducedMotion);
             // Same color the plain context row would use at this role.
             const float resting=index<selected?.44f:.62f;
             kinetic[n].activity=role;
@@ -1793,34 +2055,9 @@ struct SceneRenderer::Impl {
         const float feather=std::max(6.f,size*.35f);
         // Glow is recorded before any clip is pushed: the context target may
         // only switch to a command list with a balanced clip/layer stack.
-        ComPtr<ID2D1CommandList> glowList;
-        if(glowBlur&&ink.glowStrength>.01f){
-            bool any=false;
-            for(size_t n=0;n<count&&!any;++n)for(const auto& item:kinetic[n].items)if(item.glow>.01f){any=true;break;}
-            if(any){
-                Check(target->CreateCommandList(&glowList));
-                ComPtr<ID2D1Image> previousTarget;target->GetTarget(&previousTarget);
-                target->SetTarget(glowList.Get());
-                for(size_t n=0;n<count;++n)if(kinetic[n].valid)DrawKineticItems(kinetic[n],ink,feather,true);
-                target->SetTarget(previousTarget.Get());
-                Check(glowList->Close());
-            }
-        }
+        auto glowList=RecordGlyphGlow(kinetic.data(),count,ink,feather);
+        DrawGlyphGlow(glowList.Get(),ink,size);
         target->PushAxisAlignedClip(D2D1::RectF(g.lyricLeft - size*.5f, g.lyricTop, g.lyricLeft + g.lyricWidth + size*.5f, g.lyricBottom), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        if(glowList){
-            glowBlur->SetInput(0,glowList.Get());
-            Check(glowBlur->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION,std::clamp(size*.14f,4.f,16.f)*(qualityTier>=2?.7f:1.f)));
-            D2D1_MATRIX_3X2_F saved;target->GetTransform(&saved);target->SetTransform(D2D1::Matrix3x2F::Identity());
-            ComPtr<ID2D1Image> glowImage;glowBlur->GetOutput(&glowImage);
-            // Additive light on dark stages, soft ink bleed on light paper.
-            if(!ink.lightStage){
-                target->DrawImage(glowImage.Get(),D2D1_INTERPOLATION_MODE_LINEAR,D2D1_COMPOSITE_MODE_PLUS);
-                if(ink.glowStrength>1.05f)target->DrawImage(glowImage.Get(),D2D1_INTERPOLATION_MODE_LINEAR,D2D1_COMPOSITE_MODE_PLUS);
-            }else target->DrawImage(glowImage.Get(),D2D1_INTERPOLATION_MODE_LINEAR,D2D1_COMPOSITE_MODE_SOURCE_OVER);
-            target->SetTransform(saved);
-            // The effect keeps this list as its input until the next frame
-            // replaces it, after EndDraw has consumed the pending draw.
-        }
         for (size_t n = 0; n < count; ++n) {
             const auto& row=placement[n];
             if(!row.visible)continue;
@@ -1996,7 +2233,8 @@ struct SceneRenderer::Impl {
         compositionPaced = false;
         if(!target||!backBuffer||occluded)return false;
         if(!offscreen&&(!IsWindow(window)||IsIconic(window)))return false;
-        const auto current=MonotonicMs();
+        offscreenLyricGeometry=0;
+        const auto current=offscreen&&offscreenTimeMs>0?offscreenTimeMs:MonotonicMs();
         const auto now=input.frameAtMs>0&&input.frameAtMs<=current&&current-input.frameAtMs<=250?input.frameAtMs:current;
         auto view=input.view;
         CollectGpuTiming();
@@ -2088,13 +2326,13 @@ struct SceneRenderer::Impl {
         motion.pulse=Approach(motion.pulse,0.f,dt,5.5f);
         motion.particlePhase+=dt*motion.speed*(.7f+motion.mid*motion.response*1.3f);
         const auto colors=input.palette?Colors(*input.palette):Colors(view);
-        const int style = std::clamp(view.customTheme ? view.customTheme->baseStyle : view.theme, 0, BuiltInStyleCount-1);
+        const int style = NormalizeBuiltInStyle(view.customTheme ? view.customTheme->baseStyle : view.theme);
         const bool original=IsOriginalStyle(style);
         const auto g = Geometry(width / scale, height / scale, style, view);
         const float cameraZoom=CameraZoom();
         // GPU stage for the cover/theme atmosphere; selected image/video media
         // keeps its original Direct2D transitions and readability matte.
-        const bool gpuStage=!original&&gpu&&backBufferView&&view.coverBackground;
+        const bool gpuStage=!IsGlyphMotionStyle(style)&&!original&&gpu&&backBufferView&&view.coverBackground;
         const bool originalGpuStage=original&&originalGpu&&backBufferView;
         // The compositor pass runs only while Backstage is visible or a glass
         // panel samples the blurred stage; otherwise nothing changes.
@@ -2119,12 +2357,12 @@ struct SceneRenderer::Impl {
         }
         if(original){
             originalState.Update(p,a,currentAudio,input.manualLyricPreview,input.lyricVersionMismatch,now,dt,view.reducedMotion,
-                view.pointerActive&&!view.desktop,view.pointerX/std::max(1.f,g.stageWidth),view.pointerY/std::max(1.f,g.height));
+                view.pointerActive&&!view.desktop&&!view.backstage&&backstageValue<=0.f,
+                view.pointerX/std::max(1.f,g.stageWidth),view.pointerY/std::max(1.f,g.height));
             originalFrame={};originalFrame.style=style;originalFrame.width=g.stageWidth*scale;originalFrame.height=g.height*scale;originalFrame.dpi=scale;
             originalFrame.seconds=static_cast<float>(std::fmod(motion.phase,7200.0));originalFrame.delta=dt;
             originalFrame.low=motion.low;originalFrame.mid=motion.mid;originalFrame.high=motion.high;originalFrame.pulse=motion.pulse;
             originalFrame.response=motion.response;originalFrame.motion=view.reducedMotion?0.f:motion.cameraMotion*.5f;
-            originalFrame.drawer=view.originalDrawer;
             originalFrame.base={colors.background.r,colors.background.g,colors.background.b,1};
             originalFrame.accent={colors.accent.r,colors.accent.g,colors.accent.b,1};originalFrame.ink={colors.ink.r,colors.ink.g,colors.ink.b,1};
             originalState.Apply(originalFrame,now,view.reducedMotion);
@@ -2140,21 +2378,24 @@ struct SceneRenderer::Impl {
         ink.lightStage=Luminance(colors.background)>.45f;
         D2D1_COLOR_F highlight=colors.accent;
         if(style==0&&!view.customTheme&&gpuStage&&coverPalette.valid)highlight=Mix(colors.accent,Luminous(FromRgb(coverPalette.vivid),.42f),.65f);
-        if(style==0){ink.dim=WithAlpha(colors.ink,.40f);ink.lit=colors.ink;ink.accentLit=colors.ink;ink.glow=Luminous(highlight,.50f);}
-        else if(style==1){ink.dim=WithAlpha(colors.ink,.38f);ink.lit=Mix(colors.ink,colors.accent,.62f);ink.accentLit=Luminous(colors.accent,.42f);ink.glow=Luminous(colors.accent,.45f);}
-        else{ink.dim=WithAlpha(Mix(colors.muted,colors.ink,.35f),.70f);ink.lit=colors.ink;ink.accentLit=colors.accent;ink.glow=WithAlpha(colors.accent,ink.lightStage?.45f:1.f);}
-        if(ink.lightStage&&style!=2){ink.dim=WithAlpha(colors.ink,.45f);ink.glow=WithAlpha(colors.accent,.40f);}
-        ink.glowStrength=software||!glowBlur||qualityTier>=3?0.f:std::clamp(.55f+.45f*motion.response,0.f,1.4f)*(qualityTier==2?.6f:1.f);
+        ink.lit=CinemaLyricLight(highlight,.50f);ink.accentLit=ink.lit;ink.glow=CinemaLyricLight(highlight,.45f);
+        if(ink.lightStage)ink.glow=WithAlpha(colors.accent,.40f);
+        // Keep neutral upcoming ink readable over moving/photographic scenery.
+        // Its opacity must not make it disappear while the coloured pass stays bright.
+        ink.dim=Mix(colors.ink,colors.background,.40f);ink.dim.a=1.f;
+        ink.glowStrength=glowBlur?(qualityTier>=2?.85f:1.f):0.f;
+        ink.glow=LyricGlowTint(ink.glow,ink.lightStage);
         if(ink.glowStrength>0.f&&!ink.lightStage)ink.glow=WithAlpha(ink.glow,std::min(1.f,.80f*ink.glowStrength));
         target->SetTarget(composite?stageBitmap.Get():backBuffer.Get());target->SetDpi(96*scale,96*scale);
         target->BeginDraw(); target->SetTransform(D2D1::Matrix3x2F::Identity());
         if(original)OriginalBackdrop(g,colors,style,view,now,originalGpuStage);
         else if(gpuStage)StageDecorations(g,colors,style,view);
         else Background(g, colors, style, view);
+        if(style<6&&(!gpuStageActive||style==PosterStyle))BackgroundFinish(g,colors,style,view);
         if (g.panel) Fill(D2D1::RectF(g.stageWidth, 0, width / scale, g.height), colors.panel);
         auto chromeInk=colors.ink,chromeMuted=colors.muted;
         chromeInk.a*=motion.chromeVisibility;chromeMuted.a*=motion.chromeVisibility;
-        if(!original&&!view.desktop&&!g.compact&&style!=2){
+        if(!IsGlyphMotionStyle(style)&&!original&&!view.desktop&&!g.compact&&style!=2){
             Text(L"HTune",g.railLeft,24,220,20,12.5f,WithAlpha(chromeInk,.62f),DWRITE_TEXT_ALIGNMENT_LEADING,FontChromeStrong);
             Text(style == 0 ? L"轻光流动" : L"电影剧场",g.railLeft,43,220,18,11,WithAlpha(chromeMuted,.75f));
         }
@@ -2172,7 +2413,7 @@ struct SceneRenderer::Impl {
         }
         // The console carries the same title while it is up.
         if(original)OriginalChrome(g,colors,style,view,title,artist,now);
-        else NowPlaying(g,colors,style,title,artist,motion.chromeVisibility,g.nowPlaying==0?1.f-motion.consoleVisibility:1.f);
+        else if(!IsGlyphMotionStyle(style))NowPlaying(g,colors,style,title,artist,motion.chromeVisibility,g.nowPlaying==0?1.f-motion.consoleVisibility:1.f);
         // Shared frame time aligns host animation/projection; it cannot renew
         // an old sample's eligibility at this draw's actual entry time.
         const auto timelineSource=input.manualLyricPreview?TimelineSource::Unavailable:CurrentTimelineSource(p,current);
@@ -2181,6 +2422,7 @@ struct SceneRenderer::Impl {
         const bool hasIdentity=!input.manualLyricPreview&&!p.metadataStale&&p.pid&&p.processCreatedAtTicks&&
             (p.songIdVerified?SameCatalogId(p.songId,p.songId):!p.title.empty());
         if (hasIdentity?!continuityIdentity.Matches(p):continuityIdentity.pid!=0) {
+            if(glyphEffects)glyphEffects->Reset();
             continuityIdentity=hasIdentity?PlaybackContinuityIdentity::Capture(p):PlaybackContinuityIdentity{};
             continuityPositionMs = 0;
             continuityCapturedAtMs = 0;
@@ -2242,7 +2484,36 @@ struct SceneRenderer::Impl {
         const bool followLyrics=synced&&!input.manualLyricPreview&&!p.metadataStale&&!view.manualLyricBrowse&&!input.lyricVersionMismatch;
         std::optional<PresentedLyricPosition> selectedLine;
         LyricViewportState nextViewport;
-        Lyrics(input,view,g,colors,ink,style,followLyrics,media&&!frozen&&followLyrics,WithLyricOffset(pos,view.offsetMs),dt,now,selectedLine,nextViewport);
+        SceneInput lyricInput=input;
+        if(optionalFont.Select(textFactory.Get(),view.lyricFont,view.lyricFontPath)){
+            textCache.clear();glyphCache.clear();performanceSource.reset();motion.scrollInitialized=false;rolesInitialized=false;lyricViewport.initialized=false;
+        }
+        if(followLyrics&&input.lyrics){PreparePerformance(input,style);if(performance.timeline)lyricInput.lyrics=performance.timeline;}
+        lyricInkTime=WithLyricOffset(pos,view.offsetMs);
+        glyphEffectFrame={};glyphEffectFrame.width=g.stageWidth;glyphEffectFrame.height=g.height;
+        glyphEffectFrame.seconds=float(lyricInkTime)*.001f;glyphEffectFrame.style=style;glyphEffectFrame.quality=qualityTier;
+        glyphEffectFrame.stream=reinterpret_cast<uintptr_t>(input.lyrics.get())^input.lyricReadingRevision;
+        glyphEffectFrame.reduced=view.reducedMotion||!followLyrics;
+        glyphEffectFrame.presentationMs=now;glyphEffectFrame.accent=ink.accentLit;glyphEffectFrame.accent.a=1;
+        glyphEffectFrame.paused=p.state==PlayState::Paused||p.state==PlayState::Stopped||frozen;
+        glyphEffectFrame.advancing=followLyrics&&!frozen&&p.state==PlayState::Playing&&timelineSource!=TimelineSource::SampledClock;
+        glyphEffectFrame.sampled=followLyrics&&!frozen&&timelineSource==TimelineSource::SampledClock;
+        glyphEffectFrame.allowGap=input.lyrics&&!input.lyrics->lines.empty();
+        glyphEffectFrame.clip={std::max(0.f,g.lyricLeft-32.f),std::max(0.f,g.lyricTop-24.f),std::min(g.stageWidth,g.lyricLeft+g.lyricWidth+32.f),std::min(g.height*.87f,g.lyricBottom+24.f)};
+        Lyrics(lyricInput,view,g,colors,ink,style,followLyrics,followLyrics,lyricInkTime,dt,now,selectedLine,nextViewport);
+        if(style<6&&(glyphEffectFrame.count||glyphEffectFrame.allowGap)&&!glyphEffectFrame.reduced){
+            // Balanced D2D/D3D ownership. No extra screen-size particle surface.
+            D2D1_MATRIX_3X2_F saved;target->GetTransform(&saved);Check(target->EndDraw());target->SetTarget(nullptr);
+            if(!glyphEffects){glyphEffects=std::make_unique<GlyphEffects>();glyphEffects->Create(device.Get());}
+            glyphEffectFrame.width=float(width)/scale;glyphEffectFrame.height=float(height)/scale;
+            glyphEffects->Draw(context.Get(),stageView,width,height,glyphEffectFrame);
+            target->SetTarget(composite?stageBitmap.Get():backBuffer.Get());target->BeginDraw();target->SetTransform(saved);
+        }else if(glyphEffects)glyphEffects->Reset();
+        if(followLyrics&&input.lyrics){const auto credits=LeadingCreditCount(*input.lyrics);
+            if(credits&&credits<input.lyrics->lines.size()&&input.lyrics->lines[credits].startMs==0&&lyricInkTime<6000)
+                OpeningCredits(*input.lyrics,credits,g,colors,lyricInkTime,true);}
+        if(selectedLine&&lyricInput.lyrics!=input.lyrics&&selectedLine->lineIndex<performance.sourceLines.size())selectedLine->lineIndex=performance.sourceLines[selectedLine->lineIndex];
+        if(IsGlyphMotionStyle(style))RiftChrome(g,view,colors,title,artist);
         StatusPill(g,colors,stageStatus,statusWarning,motion.chromeVisibility);
         // Progress exists only for a usable timeline, exactly as before.
         if(style==EchoStyle&&synced){
@@ -2325,9 +2596,19 @@ void SceneRenderer::CreateOffscreen(UINT width,UINT height,float dpiScale,bool f
 bool SceneRenderer::CaptureBgra(std::vector<uint8_t>& pixels,UINT& width,UINT& height) {
     return impl_&&impl_->CaptureBgra(pixels,width,height);
 }
+bool SceneRenderer::SetOffscreenTimeMs(int64_t nowMs){
+    if(!impl_||!impl_->offscreen||nowMs<=0)return false;
+    impl_->offscreenTimeMs=nowMs;return true;
+}
 float SceneRenderer::GpuFrameMs() const {return impl_&&impl_->gpuFrameSampled?impl_->gpuFrameMs:0.f;}
 int SceneRenderer::QualityTier() const {return impl_?impl_->qualityTier:0;}
 void SceneRenderer::Resize() {if(impl_)impl_->Resize();}
+uint64_t SceneRenderer::OffscreenLyricGeometry() const {return impl_&&impl_->offscreen?impl_->offscreenLyricGeometry:0;}
+size_t SceneRenderer::OffscreenGlyphEmitterCount() const {return !impl_||!impl_->offscreen?0:impl_->rift?impl_->rift->Reading().particleEmitters:impl_->glyphEffectFrame.reduced?0:impl_->glyphEffectFrame.count;}
+double SceneRenderer::OffscreenCometFlightSeconds() const {return !impl_||!impl_->offscreen?0:impl_->rift?impl_->rift->Reading().cometFlightSeconds:impl_->glyphEffects?impl_->glyphEffects->FlightSeconds():0;}
+size_t SceneRenderer::OffscreenCometTrailSamples() const {return !impl_||!impl_->offscreen?0:impl_->rift?impl_->rift->Reading().cometTrailSamples:impl_->glyphEffects?impl_->glyphEffects->TrailSamples():0;}
+uint32_t SceneRenderer::OffscreenCometRelayCount() const {return !impl_||!impl_->offscreen?0:impl_->rift?impl_->rift->Reading().cometRelays:impl_->glyphEffects?impl_->glyphEffects->RelayCount():0;}
+std::wstring SceneRenderer::OffscreenLyricFontFamily(int style) const {return !impl_||!impl_->offscreen?L"":impl_->rift?impl_->rift->Reading().fontFamily:impl_->optionalFont.Active()?impl_->optionalFont.Family():impl_->fonts[LyricFont(style)].family;}
 bool SceneRenderer::Draw(const SceneInput& input,bool pacePresentation,std::optional<PresentedLyricPosition>* presentedLyricLine) {
     if(presentedLyricLine)presentedLyricLine->reset();
     return impl_&&impl_->Draw(input,pacePresentation,presentedLyricLine);
@@ -2347,6 +2628,9 @@ std::string SceneRenderer::PresentationDiagnostic() const {
         << " present=0x" << std::hex << static_cast<uint32_t>(impl_->lastPresentResult)
         << " visibility=0x" << static_cast<uint32_t>(impl_->lastVisibilityResult)
         << std::dec << " occluded=" << impl_->occluded << " software=" << impl_->software;
+    if(impl_->rift){const auto lyric=impl_->rift->Reading();out<<" lyricLine="<<lyric.line<<" lyricVisible="<<lyric.visibleClusters
+        <<" lyricPosition="<<lyric.renderPositionMs<<" sampledClock="<<lyric.sampledClock<<" motionAdvancing="<<lyric.advancing
+        <<" motionAudio="<<lyric.audioLevel<<" camera="<<lyric.cameraX<<","<<lyric.cameraY<<" lyricValid="<<lyric.valid;}
     return out.str();
 }
 bool SceneRenderer::RefreshVisibility() {return impl_&&impl_->RefreshVisibility();}

@@ -10,7 +10,9 @@ inline constexpr std::size_t MaxConfirmedCandidates=512;
 inline constexpr std::size_t MaxConfirmedCandidateKeyChars=1024;
 struct AppSettings {
     int theme=2, offsetMs=0;
+    int motionVariant=-1,motionFx=0,motionCamera=0,motionLines=3,motionBackground=0,motionFilter=0;
     float response=1.f, lyricSize=44.f;
+    std::wstring lyricFont,lyricFontPath;
     bool reducedMotion=false, panelVisible=true, nativeClockEnabled=true;
     bool showTranslation=true, showRomanization=false;
     int lyricDisplayMode=0; // 0 flowing column, 1 focused sentence, 2 current/next

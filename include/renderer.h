@@ -17,7 +17,9 @@ struct PresentedLyricPosition {
 };
 struct SceneView {
     int theme=2,offsetMs=0;
+    int motionVariant=-1,motionFx=0,motionCamera=0,motionLines=3,motionBackground=0,motionFilter=0;
     float response=1.f,lyricSize=44.f;
+    std::wstring lyricFont,lyricFontPath;
     size_t previewIndex=0;
     bool panelVisible=true,fullscreen=false,desktop=false,reducedMotion=false,diagnostics=false;
     std::shared_ptr<const ThemeDefinition> customTheme;
@@ -44,8 +46,8 @@ struct SceneView {
     // The stage UI console is up: the stage's own bottom card and progress
     // step back, and its status note rises above the console.
     bool consoleShown=false;
-    // New stages use a flat edge drawer and pointer-local material deformation.
-    float originalDrawer=0,pointerX=-1,pointerY=-1;
+    // Stage-local material deformation; Backstage projects the complete stage.
+    float pointerX=-1,pointerY=-1;
     bool pointerActive=false;
 };
 struct SceneInput {
@@ -80,6 +82,14 @@ public:
     // Development previews only: the same scene drawn into a texture of the
     // given physical size, without a window, swap chain or presentation.
     void CreateOffscreen(UINT width,UINT height,float dpiScale,bool forceSoftware=false);
+    // Deterministic development clock; rejected for a window/desktop renderer.
+    uint64_t OffscreenLyricGeometry() const; // Development-only geometry observation.
+    size_t OffscreenGlyphEmitterCount() const;
+    double OffscreenCometFlightSeconds() const;
+    size_t OffscreenCometTrailSamples() const;
+    uint32_t OffscreenCometRelayCount() const;
+    std::wstring OffscreenLyricFontFamily(int style) const;
+    bool SetOffscreenTimeMs(int64_t nowMs);
     bool CaptureBgra(std::vector<uint8_t>& pixels,UINT& width,UINT& height);
     float GpuFrameMs() const; // smoothed GPU time of recent frames; 0 when unavailable
     int QualityTier() const;  // 0 high .. 3 low

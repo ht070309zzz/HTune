@@ -46,7 +46,14 @@ try {
         'include/third_party/qqmusicdecoder/LICENSE',
         'include/third_party/miniz/LICENSE',
         'include/third_party/qqidentity/LICENSE',
-        'include/third_party/kugou-layout/LICENSE'
+        'include/third_party/kugou-layout/LICENSE',
+        'include/third_party/folia/LICENSE', 'include/third_party/folia/NOTICE.md',
+        'include/third_party/mineradio/LICENSE', 'include/third_party/mineradio/NOTICE.md',
+        'include/third_party/mineradio/UPSTREAM-NOTICE.md',
+        'include/third_party/paper-shaders/LICENSE', 'include/third_party/paper-shaders/NOTICE',
+        'assets/fonts/SmileySans-OFL.txt', 'assets/fonts/LXGWWenKaiLite-OFL.txt',
+        'assets/fonts/ZCOOLKuaiLe-OFL.txt', 'assets/fonts/ZCOOLQingKeHuangYou-OFL.txt',
+        'assets/fonts/optional-fonts-sources.json'
     )
     foreach ($relative in $publicFiles) {
         $source = Join-Path $projectRoot $relative

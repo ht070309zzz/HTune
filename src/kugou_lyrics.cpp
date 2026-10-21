@@ -1,3 +1,4 @@
+#include "lyric_credits.h"
 #include "kugou_lyrics.h"
 #include "lyrics.h"
 #include "native_http.h"
@@ -139,6 +140,9 @@ LyricTimeline ParseKrc(const std::wstring& text){
             !Decimal(std::wstring_view(row).substr(1,comma-1),line.startMs)||
             !Decimal(std::wstring_view(row).substr(comma+1,close-comma-1),line.durationMs,600000)||line.durationMs>86400000-line.startMs)return Failed(L"KRC 行时间无效");
         size_t pos=close+1;
+        if(IsLyricCreditText(std::wstring_view(row).substr(pos))&&row.find(L'<',pos)==std::wstring::npos){
+            line.text=row.substr(pos);line.credit=true;pos=row.size();
+        }
         while(pos<row.size()){
             if(row[pos]!=L'<'||line.words.size()>=8192)return Failed(L"KRC 逐字标记无效");
             const auto end=row.find(L'>',pos+1);if(end==std::wstring::npos||end-pos>40)return Failed(L"KRC 逐字标记无效");
@@ -153,7 +157,7 @@ LyricTimeline ParseKrc(const std::wstring& text){
             if(fragment.size()>2048||fragment.size()>8192-line.text.size())return Failed(L"KRC 文本超过上限");
             word.text=fragment;line.text+=word.text;line.words.push_back(std::move(word));pos=next==std::wstring::npos?row.size():next;
         }
-        if(line.words.empty())continue;
+        if(line.words.empty()&&!line.credit)continue;
         if(out.lines.size()>=20000||line.text.size()*2>Limit-units)return Failed(L"KRC 展开超过上限");
         units+=line.text.size()*2;out.lines.push_back(std::move(line));
     }
@@ -161,6 +165,7 @@ LyricTimeline ParseKrc(const std::wstring& text){
     for(auto& line:out.lines){
         line.startMs+=offset;if(line.startMs<0||line.startMs>86400000-line.durationMs)return Failed(L"KRC 偏移后越界");
         for(auto& word:line.words)word.startMs+=offset;
+        if(IsLyricCredit(line)){line.credit=true;line.words.clear();}
         const bool timed=std::any_of(line.words.begin(),line.words.end(),[](const auto& w){return w.durationMs>0&&std::any_of(w.text.begin(),w.text.end(),[](wchar_t c){return !iswspace(c);});});
         if(!timed)line.words.clear();else animated=true;
         readable=readable||std::any_of(line.text.begin(),line.text.end(),[](wchar_t c){return !iswspace(c);});

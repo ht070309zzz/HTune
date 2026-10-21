@@ -356,16 +356,23 @@ AppSettings LoadSettings(std::wstring& diagnostic) {
         if(data.is_discarded()||!data.is_object()||!schema||*schema!=1)throw std::runtime_error("schema");
         bool preserveOriginal=false;
         const auto preserve=[&](const std::wstring& message){preserveOriginal=true;Note(diagnostic,message);};
-        if(!ContainsOnlyFields(data,{"schema","theme","offsetMs","response","lyricSize","reducedMotion",
+        if(!ContainsOnlyFields(data,{"schema","theme","offsetMs","response","lyricSize","lyricFont","lyricFontPath","reducedMotion",
             "panelVisible","nativeClockEnabled","showTranslation","showRomanization","lyricDisplayMode",
             "fullscreenAutoHide","backgroundShade","cameraMotion","presentationMode","backgroundKind",
             "backgroundPath","window","customThemePath","confirmedCandidates",
-            "qualityMode","frameRateMode","pauseForFullscreenApps"}))
+            "qualityMode","frameRateMode","pauseForFullscreenApps","motionVariant","motionFx","motionCamera","motionLines","motionBackground","motionFilter"}))
             preserve(L"设置包含当前版本不识别的字段，已保留原文件避免丢失扩展数据");
         if(const auto field=IntegerField(data,"theme")){
-            value.theme=(int)std::clamp<int64_t>(*field,0,BuiltInStyleCount-1);
+            value.theme=NormalizeBuiltInStyle((int)std::clamp<int64_t>(*field,0,BuiltInStyleCount-1));
             if(*field<0||*field>=BuiltInStyleCount)preserve(L"theme 越界，已限制到有效范围");
         }else if(data.contains("theme"))preserve(L"theme 无效，已使用默认值");
+        if(const auto field=IntegerField(data,"motionVariant")){value.motionVariant=static_cast<int>(std::clamp<int64_t>(*field,-1,255));if(*field<-1||*field>255)preserve(L"motionVariant 越界，原文件已保留");}else if(data.contains("motionVariant"))preserve(L"motionVariant 无效，原文件已保留");
+        if(MotionVariantCount(value.theme)>0&&value.motionVariant>=MotionVariantCount(value.theme)){value.motionVariant=-1;preserve(L"motionVariant 超出当前主题的子预设范围，已使用自动编排并保留原文件");}
+        if(const auto field=IntegerField(data,"motionFx")){value.motionFx=static_cast<int>(std::clamp<int64_t>(*field,0,5));if(*field<0||*field>5)preserve(L"motionFx 越界，原文件已保留");}else if(data.contains("motionFx"))preserve(L"motionFx 无效，原文件已保留");
+        if(const auto field=IntegerField(data,"motionCamera")){value.motionCamera=static_cast<int>(std::clamp<int64_t>(*field,0,2));if(*field<0||*field>2)preserve(L"motionCamera 越界，原文件已保留");}else if(data.contains("motionCamera"))preserve(L"motionCamera 无效，原文件已保留");
+        if(const auto field=IntegerField(data,"motionLines")){value.motionLines=static_cast<int>(std::clamp<int64_t>(*field,1,10));if(*field<1||*field>10)preserve(L"motionLines 越界，原文件已保留");}else if(data.contains("motionLines"))preserve(L"motionLines 无效，原文件已保留");
+        if(const auto field=IntegerField(data,"motionFilter")){value.motionFilter=static_cast<int>(std::clamp<int64_t>(*field,0,4));if(*field<0||*field>4)preserve(L"motionFilter 越界，原文件已保留");}else if(data.contains("motionFilter"))preserve(L"motionFilter 无效，原文件已保留");
+        if(const auto field=IntegerField(data,"motionBackground")){value.motionBackground=static_cast<int>(std::clamp<int64_t>(*field,0,4));if(*field<0||*field>4)preserve(L"motionBackground 越界，原文件已保留");}else if(data.contains("motionBackground"))preserve(L"motionBackground 无效，原文件已保留");
         if(const auto field=IntegerField(data,"offsetMs")){
             value.offsetMs=(int)std::clamp<int64_t>(*field,-30000,30000);
             if(*field<-30000||*field>30000)preserve(L"offsetMs 越界，已限制到有效范围");
@@ -374,6 +381,14 @@ AppSettings LoadSettings(std::wstring& diagnostic) {
             value.response=(float)std::clamp(*field,0.,2.);
             if(*field<0.||*field>2.)preserve(L"response 越界，已限制到有效范围");
         }else if(data.contains("response"))preserve(L"response 无效，已使用默认值");
+        for(const auto name:{"lyricFont","lyricFontPath"})if(data.contains(name)){
+            const auto text=StringField(data,name);
+            if(!text||text->size()>(std::string(name)=="lyricFont"?768u:98304u)){preserve(L"歌词字体字段无效，原设置已保留");continue;}
+            auto valueText=Wide(*text);
+            const size_t limit=std::string(name)=="lyricFont"?256:32760;
+            if((!text->empty()&&valueText.empty())||valueText.size()>limit||valueText.find(L'\0')!=std::wstring::npos){preserve(L"歌词字体字段含无效字符或过长");continue;}
+            if(std::string(name)=="lyricFont")value.lyricFont=std::move(valueText);else value.lyricFontPath=std::move(valueText);
+        }
         if(const auto field=NumberField(data,"lyricSize")){
             value.lyricSize=(float)std::clamp(*field,26.,80.);
             if(*field<26.||*field>80.)preserve(L"lyricSize 越界，已限制到有效范围");
@@ -473,6 +488,7 @@ AppSettings LoadSettings(std::wstring& diagnostic) {
 }
 namespace {
 std::optional<std::string> SettingsPayload(const AppSettings& value,std::wstring& diagnostic) {
+    if(value.lyricFont.size()>256||value.lyricFont.find(L'\0')!=std::wstring::npos||(!value.lyricFont.empty()&&Utf8(value.lyricFont).empty())||value.lyricFontPath.size()>32760||value.lyricFontPath.find(L'\0')!=std::wstring::npos||(!value.lyricFontPath.empty()&&Utf8(value.lyricFontPath).empty())){diagnostic=L"歌词字体名称或路径无效，旧设置文件已保留";return std::nullopt;}
     if(!ValidCustomThemePath(value.customThemePath)){diagnostic=L"自定义主题路径无效或超过32700字符，设置未写入";return std::nullopt;}
         if(value.backgroundKind<0||value.backgroundKind>2||!ValidCustomThemePath(value.backgroundPath)||
            (value.backgroundKind!=0&&value.backgroundPath.empty())){
@@ -486,13 +502,20 @@ std::optional<std::string> SettingsPayload(const AppSettings& value,std::wstring
         if(validMatches.size()>MaxConfirmedCandidates){diagnostic=L"已确认歌词版本超过512首，旧设置文件已保留";return std::nullopt;}
         std::sort(validMatches.begin(),validMatches.end(),[](const auto& left,const auto& right){return left.first<right.first;});
         Json matches=Json::object();for(auto& [key,id]:validMatches)matches[std::move(key)]=std::move(id);
-        Json data={{"schema",1},{"theme",std::clamp(value.theme,0,BuiltInStyleCount-1)},{"offsetMs",std::clamp(value.offsetMs,-30000,30000)},
+        Json data={{"schema",1},{"theme",NormalizeBuiltInStyle(value.theme)},{"offsetMs",std::clamp(value.offsetMs,-30000,30000)},
           {"response",std::isfinite(value.response)?std::clamp(value.response,0.f,2.f):1.f},{"lyricSize",std::isfinite(value.lyricSize)?std::clamp(value.lyricSize,26.f,80.f):44.f},
           {"reducedMotion",value.reducedMotion},{"panelVisible",value.panelVisible},{"nativeClockEnabled",value.nativeClockEnabled},{"showTranslation",value.showTranslation},{"showRomanization",value.showRomanization},{"presentationMode",std::clamp(value.presentationMode,0,1)},{"backgroundKind",std::clamp(value.backgroundKind,0,2)},
           {"backgroundPath",Utf8(value.backgroundPath)},{"confirmedCandidates",std::move(matches)}};
         if(value.hasWindowPlacement){data["window"]={{"x",std::clamp(value.windowX,-200000,200000)},{"y",std::clamp(value.windowY,-200000,200000)},{"width",std::clamp(value.windowWidth,320,16384)},{"height",std::clamp(value.windowHeight,240,16384)},{"maximized",value.windowMaximized}};
             if(value.windowDpi>=48&&value.windowDpi<=768)data["window"]["dpi"]=value.windowDpi;
         }
+        data["lyricFont"]=Utf8(value.lyricFont);data["lyricFontPath"]=Utf8(value.lyricFontPath);
+        data["motionVariant"]=std::clamp(value.motionVariant,-1,255);
+        data["motionFx"]=std::clamp(value.motionFx,0,5);
+        data["motionCamera"]=std::clamp(value.motionCamera,0,2);
+        data["motionLines"]=std::clamp(value.motionLines,1,10);
+        data["motionFilter"]=std::clamp(value.motionFilter,0,4);
+        data["motionBackground"]=std::clamp(value.motionBackground,0,4);
         data["customThemePath"]=Utf8(value.customThemePath);
         data["lyricDisplayMode"]=std::clamp(value.lyricDisplayMode,0,2);
         data["fullscreenAutoHide"]=value.fullscreenAutoHide;

@@ -4,6 +4,7 @@
 #include "resource.h"
 1 RT_MANIFEST "app.manifest"
 IDI_MUSIC_STAGE ICON "../assets/htune.ico"
+#include "rift_font.rc"
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION MUSIC_STAGE_VERSION_PARTS
  PRODUCTVERSION MUSIC_STAGE_VERSION_PARTS
