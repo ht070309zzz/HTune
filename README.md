@@ -6,7 +6,18 @@
 
 采用 C++20、Win32、Direct3D 11、Direct2D、DirectWrite、Media Foundation、WASAPI 和 WinHTTP。运行时不需要 Electron、WebView 或 Node.js。节省大量CPU性能、内存占用
 
-当前源码版本：**0.7.14**。项目持续开发中，播放器兼容性和同步表现受客户端版本、数据来源及系统环境影响。
+当前电脑版源码版本：**0.7.35**。项目持续开发中，播放器兼容性和同步表现受客户端版本、数据来源及系统环境影响。实际资源开销取决于主题、分辨率和画质，当前版本没有完成真实播放性能测量。
+
+## 0.7.35 电脑版更新
+
+- 28 个保留主题，包含原生歌词演出、整屏转场和各主题的音频响应背景。
+- KTV 逐字填色与部分主题的小幅单字入场；真实逐字时间优先，只有逐行时间时按句时长估算，估算不保证与真实音节完全同步。
+- 长句按原文顺序拆为短词组接力，译文和罗马音贴近原文随动；补回歌词制作署名。
+- 统一默认文字柔光；支持内置可选字体、系统字体和导入 TTF/OTF，导入文件不会被上传。
+- 放大的彗星头与连续粒子尾迹，在邻近歌词字形间穿梭、追逐和交换位置，换句时接力；暂停保持，切歌或跳转清理旧轨迹。
+- 保留正常入场、换句与镜头运动，已出现的字不随鼓点或音量反复蹦跳。
+
+原生 Release 编译与内部合成检查已完成；真实歌曲下的最新视觉、同步与长期性能仍需核验。内部检查不是审美验收。本次更新源码，安装包版本请以 Releases 中的实际标记为准。
 
 ## 功能
 
@@ -54,7 +65,7 @@ SMTC 是 Windows 的系统媒体传输控制接口。QQ、酷狗和汽水当前�
 
 脚本通过 Visual Studio Installer 的 `vswhere` 定位工具链。着色器离线编译并嵌入程序，第三方头文件及解压源码已随仓库提供，无需 npm 或额外的播放器辅助服务。
 
-构建成功后程序位于 `build/bin/0.7.14/HTune.exe`。Debug 构建使用 `-Configuration Debug`，输出在 `build/bin/debug/0.7.14/HTune.exe`。构建日志及输入摘要保存在 `build/provenance/`，不提交到仓库。
+构建成功后程序位于 `build/bin/0.7.35/HTune.exe`。Debug 构建使用 `-Configuration Debug`，输出在 `build/bin/debug/0.7.35/HTune.exe`。构建日志及输入摘要保存在 `build/provenance/`，不提交到仓库。
 
 构建脚本只编译，不启动应用、不安装软件，也不执行运行时测试。
 
@@ -95,13 +106,14 @@ HTune 以前名为 MusicStage。为延续旧版配置，内部窗口身份与用
 | `src/`、`include/` | 原生窗口、播放器适配、歌词、音频分析、渲染、设置与缓存 |
 | `src/shaders/` | Direct3D 舞台着色器 |
 | `include/third_party/` | 已注明来源和许可证的第三方组件 |
-| `assets/` | HTune 图标源文件与 Windows ICO |
+| `assets/` | 图标、字体及许可、原生动效配方 |
 | `scripts/` | 本地编译及构建记录辅助脚本 |
+| `tests/` | 共用渲染器的离屏工具与内部检查源码，默认不构建 |
 
 欢迎提交 Issue 和 Pull Request。报告问题时请注明 HTune、Windows 和播放器版本、显示模式及复现步骤；分享日志或截图前请移除个人信息。提交代码请同时说明编译情况和实际验证范围。
 
 ## 许可证与致谢
 
-HTune 使用 [MIT 许可证](LICENSE)。第三方组件沿用各自的版权与许可声明，详见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。音乐、歌词与在线封面等第三方内容不属于本仓库的授权范围。
+当前 HTune 使用 [GNU AGPL-3.0-only](LICENSE)。早期 MIT 源码的原有版权和许可保留在 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)，历史提交不改写。第三方代码、动效配方和字体沿用各自的版权与许可声明。音乐、歌词与在线封面等第三方内容不属于本仓库的授权范围。
 
-视觉与交互参考 [Folia](https://github.com/chthollyphile/folia-major) 和 [Mineradio](https://github.com/XxHuberrr/Mineradio-paused)。本仓库为独立 C++ 实现，不包含这两个项目的 Electron 运行时、代码、着色器或素材。
+部分视觉代码、着色器及配方从固定版本的 [Folia](https://github.com/chthollyphile/folia-major) 和 [Mineradio](https://github.com/XxHuberrr/Mineradio-paused) 适配为 C++/HLSL；来源、固定提交、修改说明及完整许可随源码保留。运行时使用原生渲染，没有引入 Electron、Three.js 或 Node 服务。另包含 Apache-2.0 的 Paper Shaders 适配和 SIL OFL 字体。

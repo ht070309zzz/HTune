@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(MusicStageNative VERSION 0.7.14 LANGUAGES CXX)
+project(MusicStageNative VERSION 0.7.35 LANGUAGES CXX)
 if(NOT WIN32 OR NOT MSVC)
   message(FATAL_ERROR "MusicStage requires Windows and MSVC")
 endif()
@@ -10,17 +10,22 @@ add_executable(MusicStageNative WIN32 src/main.cpp src/playback.cpp src/playback
 target_include_directories(MusicStageNative PRIVATE include)
 target_compile_features(MusicStageNative PRIVATE cxx_std_20)
 target_compile_definitions(MusicStageNative PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
-# Public Release binaries must not embed the builder's local source paths in
-# C++/WinRT exception source_location metadata. Keep Debug diagnostics intact.
+# Keep the existing public-build privacy setting when updating desktop sources.
 target_compile_definitions(MusicStageNative PRIVATE $<$<CONFIG:Release>:WINRT_NO_SOURCE_LOCATION>)
 target_compile_options(MusicStageNative PRIVATE /W4 /permissive- /EHsc /utf-8)
 set_property(TARGET MusicStageNative PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 target_link_libraries(MusicStageNative PRIVATE d3d11 dxgi dxguid d2d1 dwrite dwmapi imm32 windowsapp runtimeobject uiautomationcore version winhttp bcrypt normaliz ole32 oleaut32 uuid avrt comdlg32 comctl32 shell32 shlwapi mfplat mf mfuuid mfreadwrite windowscodecs mmdevapi uxtheme cldapi)
 target_link_options(MusicStageNative PRIVATE /MANIFEST:NO)
 target_sources(MusicStageNative PRIVATE src/app.rc)
-target_sources(MusicStageNative PRIVATE src/original_stages.cpp)
+target_sources(MusicStageNative PRIVATE src/original_stages.cpp src/rift_stage.cpp src/glyph_effects.cpp src/folia_camera.cpp src/folia_programs.cpp src/folia_backdrop.cpp src/folia_diorama.cpp src/mineradio_stage.cpp)
 set_property(SOURCE src/app.rc PROPERTY OBJECT_DEPENDS
-  "${CMAKE_CURRENT_SOURCE_DIR}/include/version.h;${CMAKE_CURRENT_SOURCE_DIR}/include/resource.h;${CMAKE_CURRENT_SOURCE_DIR}/src/app.manifest;${CMAKE_CURRENT_SOURCE_DIR}/assets/htune.ico")
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/version.h;${CMAKE_CURRENT_SOURCE_DIR}/include/resource.h;${CMAKE_CURRENT_SOURCE_DIR}/src/app.manifest;${CMAKE_CURRENT_SOURCE_DIR}/src/rift_font.rc;${CMAKE_CURRENT_SOURCE_DIR}/assets/htune.ico;${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/SmileySans-Oblique.ttf;${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/SmileySans-OFL.txt")
+set_property(SOURCE src/rift_font.rc PROPERTY OBJECT_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/resource.h;${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/SmileySans-Oblique.ttf;${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/SmileySans-OFL.txt")
+file(GLOB HTUNE_OPTIONAL_FONTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/*.ttf" "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/*OFL.txt")
+set_property(SOURCE src/app.rc src/rift_font.rc APPEND PROPERTY OBJECT_DEPENDS "${HTUNE_OPTIONAL_FONTS}")
+set_property(SOURCE src/app.rc src/rift_font.rc APPEND PROPERTY OBJECT_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/assets/motion/folia-lumiere.json;${CMAKE_CURRENT_SOURCE_DIR}/assets/motion/folia-tempera.json;${CMAKE_CURRENT_SOURCE_DIR}/assets/motion/folia-diorama.json;${CMAKE_CURRENT_SOURCE_DIR}/assets/motion/folia-sonnet.json")
 
 # Stage shaders are compiled offline by the Windows SDK compiler into headers
 # embedded in the executable; nothing compiles or downloads shaders at runtime.
@@ -33,7 +38,7 @@ function(music_stage_shader file entry profile variable)
   set(output "${MUSIC_STAGE_SHADER_OUTPUT}/${variable}.h")
   add_custom_command(OUTPUT "${output}"
     COMMAND "${MUSIC_STAGE_FXC}" /nologo /WX /O3 /T ${profile} /E ${entry} /Vn ${variable} /Fh "${output}" "${MUSIC_STAGE_SHADER_SOURCE}/${file}"
-    DEPENDS "${MUSIC_STAGE_SHADER_SOURCE}/${file}" "${MUSIC_STAGE_SHADER_SOURCE}/stage_common.hlsli"
+    DEPENDS "${MUSIC_STAGE_SHADER_SOURCE}/${file}" "${MUSIC_STAGE_SHADER_SOURCE}/stage_common.hlsli" "${MUSIC_STAGE_SHADER_SOURCE}/mineradio_lyrics.hlsli" "${MUSIC_STAGE_SHADER_SOURCE}/stage_detail.hlsli"
     COMMENT "fxc ${file}:${entry}"
     VERBATIM)
   set(MUSIC_STAGE_SHADER_HEADERS ${MUSIC_STAGE_SHADER_HEADERS} "${output}" PARENT_SCOPE)
@@ -53,8 +58,63 @@ music_stage_shader(stage_original.hlsl BackgroundPS ps_4_0 g_OriginalBackgroundP
 music_stage_shader(stage_original.hlsl WeaveVS vs_4_0 g_OriginalWeaveVS)
 music_stage_shader(stage_original.hlsl EchoVS vs_4_0 g_OriginalEchoVS)
 music_stage_shader(stage_original.hlsl ThreadPS ps_4_0 g_OriginalThreadPS)
+music_stage_shader(stage_rift.hlsl RiftVS vs_4_0 g_RiftVS)
+music_stage_shader(stage_rift.hlsl RiftPS ps_4_0 g_RiftPS)
+music_stage_shader(stage_rift.hlsl RiftGlowPS ps_4_0 g_RiftGlowPS)
+music_stage_shader(stage_detail.hlsl DetailPS ps_4_0 g_ThemeDetailPS)
+music_stage_shader(glyph_effects.hlsl GlyphEffectVS vs_4_0 g_GlyphEffectVS)
+music_stage_shader(glyph_effects.hlsl GlyphEffectPS ps_4_0 g_GlyphEffectPS)
+music_stage_shader(folia_transition.hlsl LayerPS ps_4_0 g_FoliaLayerPS)
+music_stage_shader(folia_transition.hlsl TransitionVS vs_4_0 g_FoliaTransitionVS)
+music_stage_shader(folia_transition.hlsl TransitionPS ps_4_0 g_FoliaTransitionPS)
+music_stage_shader(folia_monet.hlsl MonetPS ps_4_0 g_FoliaMonetPS)
+music_stage_shader(paper_0.hlsl PaperPS0 ps_4_0 g_PaperPS0)
+music_stage_shader(paper_1.hlsl PaperPS1 ps_4_0 g_PaperPS1)
+music_stage_shader(paper_2.hlsl PaperPS2 ps_4_0 g_PaperPS2)
+music_stage_shader(paper_3.hlsl PaperPS3 ps_4_0 g_PaperPS3)
+music_stage_shader(paper_4.hlsl PaperPS4 ps_4_0 g_PaperPS4)
+music_stage_shader(paper_5.hlsl PaperPS5 ps_4_0 g_PaperPS5)
+music_stage_shader(paper_6.hlsl PaperPS6 ps_4_0 g_PaperPS6)
+music_stage_shader(native_terrain.hlsl TerrainVS vs_4_0 g_NativeTerrainVS)
+music_stage_shader(native_terrain.hlsl TerrainPS ps_4_0 g_NativeTerrainPS)
+music_stage_shader(mineradio.hlsl MineradioVS vs_4_0 g_MineradioVS)
+music_stage_shader(mineradio.hlsl MineradioPS ps_4_0 g_MineradioPS)
+music_stage_shader(folia_light.hlsl LumiereVS vs_4_0 g_LumiereVS)
+music_stage_shader(folia_light.hlsl LumierePS ps_4_0 g_LumierePS)
 target_sources(MusicStageNative PRIVATE ${MUSIC_STAGE_SHADER_HEADERS})
 target_include_directories(MusicStageNative PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+
+# Development-only offscreen preview tool (scripts/preview.ps1). Never part of
+# the default build, the build receipt or any package.
+add_executable(MusicStagePreview EXCLUDE_FROM_ALL tests/stage-preview.cpp src/renderer.cpp src/stage_gpu.cpp src/stage_compositor.cpp src/stage_ui.cpp src/stage_ui_draw.cpp src/stage_interface.cpp src/theme_transition.cpp src/lyric_glyphs.cpp ${MUSIC_STAGE_SHADER_HEADERS})
+target_include_directories(MusicStagePreview PRIVATE include "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_sources(MusicStagePreview PRIVATE src/original_stages.cpp src/rift_stage.cpp src/glyph_effects.cpp src/folia_camera.cpp src/folia_programs.cpp src/folia_backdrop.cpp src/folia_diorama.cpp src/mineradio_stage.cpp src/rift_font.rc)
+target_compile_features(MusicStagePreview PRIVATE cxx_std_20)
+target_compile_definitions(MusicStagePreview PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+target_compile_options(MusicStagePreview PRIVATE /W4 /permissive- /EHsc /utf-8)
+set_property(TARGET MusicStagePreview PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+target_link_libraries(MusicStagePreview PRIVATE d3d11 dxgi dxguid d2d1 dwrite dwmapi windowscodecs ole32 uuid)
+set_target_properties(MusicStagePreview PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/preview-tool")
+
+# Same renderer and resources as HTune. Synthetic snapshots only, no window/profile/capture.
+get_target_property(RIFT_PREVIEW_SOURCES MusicStagePreview SOURCES)
+list(REMOVE_ITEM RIFT_PREVIEW_SOURCES tests/stage-preview.cpp)
+add_executable(HTuneRiftPreview EXCLUDE_FROM_ALL tests/rift-preview.cpp src/themes.cpp ${RIFT_PREVIEW_SOURCES})
+target_include_directories(HTuneRiftPreview PRIVATE include "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_compile_features(HTuneRiftPreview PRIVATE cxx_std_20)
+target_compile_definitions(HTuneRiftPreview PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+target_compile_options(HTuneRiftPreview PRIVATE /W4 /permissive- /EHsc /utf-8)
+set_property(TARGET HTuneRiftPreview PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+target_link_libraries(HTuneRiftPreview PRIVATE d3d11 dxgi dxguid d2d1 dwrite dwmapi windowscodecs ole32 uuid)
+set_target_properties(HTuneRiftPreview PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/preview-tool")
+add_executable(HTuneFontSettingsCheck EXCLUDE_FROM_ALL tests/font-settings-check.cpp)
+target_include_directories(HTuneFontSettingsCheck PRIVATE include)
+target_compile_features(HTuneFontSettingsCheck PRIVATE cxx_std_20)
+target_compile_definitions(HTuneFontSettingsCheck PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+target_compile_options(HTuneFontSettingsCheck PRIVATE /W4 /permissive- /EHsc /utf-8)
+set_property(TARGET HTuneFontSettingsCheck PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+target_link_libraries(HTuneFontSettingsCheck PRIVATE ole32 shell32 uuid)
+set_target_properties(HTuneFontSettingsCheck PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/preview-tool")
 
 set(MUSIC_STAGE_OUTPUT_ROOT "${CMAKE_BINARY_DIR}/bin" CACHE PATH "Native binary output root")
 set_target_properties(MusicStageNative PROPERTIES OUTPUT_NAME "HTune" RUNTIME_OUTPUT_DIRECTORY "${MUSIC_STAGE_OUTPUT_ROOT}/${PROJECT_VERSION}")
