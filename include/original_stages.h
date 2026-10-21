@@ -15,16 +15,16 @@ struct OriginalComposition {
     float width=1,height=1,margin=24,railY=1;
     float lyricX=0,lyricY=0,lyricWidth=1,lyricHeight=1;
     float coverX=0,coverY=0,coverWidth=0,coverHeight=0;
-    float controlsX=0,drawerLeft=1,drawerWidth=0;
+    float controlsX=0;
     bool compact=false;
 };
-OriginalComposition ComposeOriginal(int style,float width,float height,float drawer=0);
+OriginalComposition ComposeOriginal(int style,float width,float height);
 
 struct OriginalVisualFrame {
     int style=WeaveStyle;
     float width=1,height=1,dpi=1,seconds=0,delta=0;
     float low=0,mid=0,high=0,pulse=0,response=1,motion=1;
-    float pointerX=-1,pointerY=-1,pointerPresence=0,drawer=0;
+    float pointerX=-1,pointerY=-1,pointerPresence=0;
     float rowEnter=1,trackEnter=1,historyBegin=0,historyEnd=0;
     float historyExtent=0,previousExtent=0;
     ThemeColor base{},accent{},ink{};

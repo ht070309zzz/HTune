@@ -98,6 +98,7 @@ struct LyricLine {
     std::wstring text;
     std::vector<LyricWord> words;
     std::wstring translation, romanization;
+    bool credit = false; // Provider credit metadata, never a sung syllable.
 };
 inline size_t LyricLineAt(const std::vector<LyricLine>& lines,int64_t position) {
     // Parser and cache validation keep startMs in nondecreasing order.

@@ -23,11 +23,13 @@ struct SettingsView {
     std::wstring coverStatus,backgroundNotice;
     bool backgroundRetry=false;
     float response=1.f,lyricSize=44.f,backgroundShade=0.f,cameraMotion=1.f;
+    std::wstring lyricFont,lyricFontPath,lyricFontNotice;
     bool reducedMotion=false;
     int qualityMode=0,frameRateMode=0;
     bool pauseForFullscreenApps=true;
     // Theme.
     int themeStyle=1;           // built-in style, or the custom theme's base style
+    int motionVariant=-1,motionFx=0,motionCamera=0,motionLines=3,motionBackground=0,motionFilter=0;
     bool customTheme=false,themeRestorePending=false;
     std::wstring customThemeName,themeNotice;
     // Lyrics.
@@ -56,7 +58,9 @@ enum class UiCommand : uint16_t {
     ToggleFullscreen,EnterDesktop,WindowMode,
     UseCover,ChooseImage,ChooseVideo,RetryBackground,
     SetResponse,SetLyricSize,SetBackgroundShade,SetCameraMotion,ResetBackdrop,SetReducedMotion,
+    SetLyricFont,ChooseSystemLyricFont,ImportLyricFont,
     SetQuality,SetFrameRate,SetPauseForFullscreen,
+    SetMotionVariant,SetMotionFx,SetMotionCamera,SetMotionLines,SetMotionBackground,SetMotionFilter,
     SelectStyle,ImportTheme,ExportTheme,ChooseAccent,RetryTheme,
     FindLyrics,FollowCurrent,SelectCandidate,FetchCandidate,ImportLyrics,RestoreOnline,
     SetOffset,ResetOffset,SetTranslation,SetRomanization,SetLyricMode,RepairLyricMemory,

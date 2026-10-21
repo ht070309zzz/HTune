@@ -33,6 +33,7 @@ struct StageGpuFrame {
     float dustOpacity=0;
     int64_t nowMs=0;                 // monotonic wall clock for cover cross-fades
     int quality=1;                   // 0 high .. 3 low: particles, atmosphere scale, dust
+    bool reducedMotion=false;       // Freeze the extra decorative light planes.
 };
 // Direct3D 11 layer drawn before Direct2D into the same back buffer. Shaders
 // are compiled offline by fxc; a device below feature level 10_0 simply keeps

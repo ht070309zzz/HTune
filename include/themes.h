@@ -3,9 +3,11 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include "motion_styles.h"
 
 namespace stage {
-inline constexpr int BuiltInStyleCount=6;
+// Historical ID upper bound, not the number of visible choices (28).
+inline constexpr int BuiltInStyleCount=FirstMineradioStyle+static_cast<int>(MineradioNames.size());
 inline constexpr int CustomThemeChoice=BuiltInStyleCount;
 struct ThemeColor { float r = 0, g = 0, b = 0, a = 1; };
 constexpr ThemeColor ThemeRgb(uint32_t rgb) {
@@ -14,11 +16,15 @@ constexpr ThemeColor ThemeRgb(uint32_t rgb) {
 enum class ThemeBackgroundKind { None, Image, Video };
 struct ThemeDefinition {
     std::wstring name = L"声色排版";
-    int baseStyle = 2; // 0 flow, 1 cinema, 2 paper, 3 weave, 4 poster, 5 echo
+    int baseStyle = 2; // 0 flow, 1 cinema, 2 paper, 3 weave, 4 poster, 5 echo, 6 rift
+    int motionVariant=-1,motionFx=0,motionCamera=0,motionLines=3,motionBackground=0,motionFilter=0; // native motion options
+    // motionVariant -1 selects scenes from content; positive values choose a fixed subpreset.
     ThemeColor background = ThemeRgb(0xF7F2E8), panel = ThemeRgb(0xECE5D8),
         ink = ThemeRgb(0x352719), muted = ThemeRgb(0x8E7864),
         accent = ThemeRgb(0xBA432B), glow = ThemeRgb(0xE1C7A8);
     float response = 1, lyricSize = 44; // clamped to 0..2 and 26..80, respectively
+    std::wstring lyricFont;
+    std::filesystem::path lyricFontPath;
     bool reducedMotion = false;
     int lyricDisplayMode=0;
     float backgroundShade=0,cameraMotion=1;
